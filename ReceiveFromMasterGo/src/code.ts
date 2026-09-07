@@ -12,7 +12,7 @@ import {
   applyDeferredLayoutRestores,
   applyDeferredSingleChildAutoSpaceAlignmentFixes
 } from "./deferredLayout";
-import { loadFontCached, refreshAvailableFonts } from "./fontLoader";
+import { loadFontCached, refreshAvailableFonts, ensureAvailableFontsLoaded, resolveAvailableFontName } from "./fontLoader";
 import {
   cleanupImportedContainerShells, createNodeFromData,
   appendRestoredNode, safeRemove, hasUsableVectorNetwork
@@ -54,7 +54,7 @@ type ImportSession = {
   // reached (use-before-definition INSIDE one page root — the root-level topo
   // sort can't reorder those). They restore as frame shells first and get
   // swapped for real instances after the page finishes.
-  deferredInstanceRelinks: { id: string; node: SceneNode }[];
+  deferredInstanceRelinks: { id: string; node: SceneNode; layers?: { [id: string]: ImportLayerRecord } }[];
   // Off-canvas shared-library component masters (record.libraryMaster). They
   // are restored so instances can re-link, then removed once every page has
   // finished relinking — MasterGo does not show them on its canvas either.
@@ -341,7 +341,9 @@ async function importSessionStyles(message: any): Promise<void> {
         }
         session.figmaStyleIdByRef[style.id] = effectStyle.id;
       } else if (style.styleType === "TEXT" && style.fontName) {
-        const fontName = { family: String(style.fontName.family || "Inter"), style: String(style.fontName.style || "Regular") };
+        const requestedFont = { family: String(style.fontName.family || "Inter"), style: String(style.fontName.style || "Regular") };
+        await ensureAvailableFontsLoaded();
+        const fontName = resolveAvailableFontName(requestedFont) || requestedFont;
         await loadFontCached(fontName);
         const textStyle = figma.createTextStyle();
         textStyle.name = String(style.name);
@@ -420,7 +422,8 @@ async function applyImportedStyleBindings(node: SceneNode, layerRecord: ImportLa
   const strokeRef = (layerRecord as any).strokeStyleRef;
   const effectRef = (layerRecord as any).effectStyleRef;
   const textRef = (layerRecord as any).textStyleRef;
-  if (!fillRef && !strokeRef && !effectRef && !textRef) return;
+  const textRanges = (layerRecord as any).textStyleRanges || [];
+  if (!fillRef && !strokeRef && !effectRef && !textRef && textRanges.length === 0) return;
   try {
     if (fillRef && map[fillRef] && "setFillStyleIdAsync" in node) await (node as any).setFillStyleIdAsync(map[fillRef]);
   } catch (error) { /* binding is cosmetic — values already applied */ }
@@ -435,6 +438,13 @@ async function applyImportedStyleBindings(node: SceneNode, layerRecord: ImportLa
       await (node as any).setTextStyleIdAsync(map[textRef]);
     }
   } catch (error) { /* ignore */ }
+  if (node.type === "TEXT") {
+    for (const range of textRanges) {
+      if (!map[range.styleRef] || range.start < 0 || range.end > node.characters.length || range.end <= range.start) continue;
+      try { await node.setRangeTextStyleIdAsync(range.start, range.end, map[range.styleRef]); }
+      catch (error) { /* keep already restored per-range typography */ }
+    }
+  }
 }
 
 function startImportAsset(message: any) {
@@ -465,10 +475,10 @@ function finishImportAsset(message: any) {
   const pending = pendingImportAssets[path];
   if (!pending) throw new Error(`图片资源传输不存在：${path}`);
 
-  const concatStartedAt = Date.now();
-  const bytes = concatBytes(pending.chunks, pending.size);
-  addImportTiming(session, "asset.concatBytesMs", Date.now() - concatStartedAt);
   try {
+    const concatStartedAt = Date.now();
+    const bytes = concatBytes(pending.chunks, pending.size);
+    addImportTiming(session, "asset.concatBytesMs", Date.now() - concatStartedAt);
     const imageStartedAt = Date.now();
     const image = figma.createImage(bytes);
     addImportTiming(session, "asset.createImageMs", Date.now() - imageStartedAt);
@@ -478,9 +488,9 @@ function finishImportAsset(message: any) {
   } catch (error) {
     console.warn("Unable to create Figma image from streamed asset:", path, error);
     for (const key of pending.keys.length > 0 ? pending.keys : [path]) recordStreamedMissingImage(key);
+  } finally {
+    delete pendingImportAssets[path];
   }
-
-  delete pendingImportAssets[path];
 }
 
 function startImportPage(message: any) {
@@ -1229,8 +1239,8 @@ async function applyInstanceRecordState(
 }
 
 // After a page finishes restoring, swap frame-shell fallbacks for real
-// instances — their components definitely exist by now regardless of where
-// they sat in the child order. Entries whose shell was already discarded
+// instances. Masters on later pages keep their pending entries until a later
+// page completes. Entries whose shell was already discarded
 // (an outer shell got swapped first) are skipped.
 async function retryDeferredInstanceRelinks(layers: { [id: string]: ImportLayerRecord }): Promise<void> {
   const session = activeImportSession;
@@ -1239,11 +1249,28 @@ async function retryDeferredInstanceRelinks(layers: { [id: string]: ImportLayerR
   session.deferredInstanceRelinks = [];
   let swapped = 0;
   for (const entry of pending) {
-    const layerRecord = layers[entry.id];
+    const overrideLayers = entry.layers || layers;
+    const layerRecord = overrideLayers[entry.id];
     const shell = entry.node;
     if (!layerRecord || !layerRecord.mainComponentId || !shell || shell.removed) continue;
     const componentNode = session.restoredNodeById[layerRecord.mainComponentId];
-    if (!componentNode || componentNode.removed || componentNode.type !== "COMPONENT") continue;
+    if (!componentNode || componentNode.removed || componentNode.type !== "COMPONENT") {
+      // The master may live on a later page. Retain only this instance's
+      // override subtree, not the whole page's records, until it arrives.
+      if (!entry.layers) {
+        entry.layers = {};
+        const stack = [layerRecord.id];
+        while (stack.length) {
+          const id = stack.pop() as string;
+          const record = overrideLayers[id];
+          if (!record || entry.layers[id]) continue;
+          entry.layers[id] = record;
+          stack.push(...(record.childIds || []));
+        }
+      }
+      session.deferredInstanceRelinks.push(entry);
+      continue;
+    }
     const parent = shell.parent;
     if (!parent || !("insertChild" in parent)) continue;
     let instance: InstanceNode | null = null;
@@ -1256,7 +1283,7 @@ async function retryDeferredInstanceRelinks(layers: { [id: string]: ImportLayerR
       if (instance) safeRemove(instance);
       continue;
     }
-    await applyInstanceRecordState(instance, layerRecord, layers);
+    await applyInstanceRecordState(instance, layerRecord, overrideLayers);
     session.restoredNodeById[layerRecord.id] = instance;
     safeRemove(shell);
     swapped++;

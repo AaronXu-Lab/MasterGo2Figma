@@ -294,34 +294,43 @@ export function normalizeConstraintType(value: any): string | undefined {
 }
 
 export function safeSetFills(node: any, fills: any[]) {
-    if (!("fills" in node)) return;
-
-    const normalized = normalizePaintsForFigma(fills);
-    try {
-        node.fills = normalized;
-    } catch (error) {
-        const fallbackFills = stripUnsupportedPaintExtras(normalized);
-        try {
-            node.fills = fallbackFills;
-        } catch (fallbackError) {
-            console.warn("Unable to set fills:", node.name, describePaintSetError(fallbackError, fallbackFills));
-        }
-    }
+    setPaintsIndependently(node, "fills", fills);
 }
 
 export function safeSetStrokes(node: any, strokes: any[]) {
-    if (!("strokes" in node)) return;
+    setPaintsIndependently(node, "strokes", strokes);
+}
 
-    const normalized = normalizePaintsForFigma(strokes);
+function setPaintsIndependently(node: any, target: "fills" | "strokes", paints: any[]) {
+    if (!(target in node)) return;
+    const normalized = normalizePaintsForFigma(paints);
     try {
-        node.strokes = normalized;
+        node[target] = normalized;
+        return;
     } catch (error) {
-        const fallbackStrokes = stripUnsupportedPaintExtras(normalized);
-        try {
-            node.strokes = fallbackStrokes;
-        } catch (fallbackError) {
-            console.warn("Unable to set strokes:", node.name, describePaintSetError(fallbackError, fallbackStrokes));
+        // The setter validates the whole array atomically. One bad image must
+        // not discard valid solid/gradient paints or leave the default fill.
+    }
+    const accepted: any[] = [];
+    for (const paint of normalized) {
+        const candidates = [paint, ...stripUnsupportedPaintExtras([paint])];
+        if (paint.type === "IMAGE") candidates.push({
+            type: "SOLID", color: { ...MISSING_IMAGE_PLACEHOLDER_COLOR },
+            visible: paint.visible, opacity: paint.opacity
+        });
+        let restored = false;
+        for (const candidate of candidates) {
+            try {
+                node[target] = [...accepted, candidate];
+                accepted.push(candidate);
+                restored = true;
+                break;
+            } catch (error) { /* try this paint's fallback, preserve its siblings */ }
         }
+        if (!restored) console.warn("Unable to set paint:", node.name, target, paint.type);
+    }
+    if (accepted.length === 0) {
+        try { node[target] = []; } catch (error) { /* target may be read-only */ }
     }
 }
 
@@ -413,14 +422,6 @@ function clamp01(value: number): number {
     if (value < 0) return 0;
     if (value > 1) return 1;
     return value;
-}
-
-function describePaintSetError(error: any, paints: any[]): any {
-    return {
-        message: error instanceof Error ? error.message : String(error || "Unknown error"),
-        paintTypes: Array.isArray(paints) ? paints.map(paint => paint && paint.type) : [],
-        blendModes: Array.isArray(paints) ? paints.map(paint => paint && paint.blendMode).filter(Boolean) : []
-    };
 }
 
 export function isNearlyZero(value: number): boolean {

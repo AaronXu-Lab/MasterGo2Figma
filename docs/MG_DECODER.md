@@ -514,6 +514,8 @@ Result: deep-prop 1304 → 60, font 166 → 4, geometry/transform/index → 0. F
   import). `record.libraryMaster` is gated on PAGE-ROOT parentage (`!nodes[n.parent]` — the
   parent is the unresolvable page owner token), matching the doctrine that off-canvas
   registry masters merely share the page owner and never appear in MasterGo's own traversal.
+  Since 2026-09-06, explicitly recovered off-canvas dependency roots are also marked
+  `libraryMaster`, even when their original parent resolves; real canvas components remain excluded.
 - **A share-style slash override record scales against ITS OWN parent context, not the
   component**: `3:0877/3:0817` stores the resized 50 (final in the 头像@50 instance), and
   mapping it against component 3:0816's 64 re-applied the resize (avatar subtree → 39.06 =
@@ -1063,3 +1065,100 @@ importer's `figma.subtract` recomputes them live).
 
 ## Mirror
 Mirrors auto-memory `mg-binary-format.md`. Keep both updated as decoding progresses.
+
+## 2026-09-06 · Codeless external masters and materialized visibility (0906)
+
+The 0906 file contains complete external component trees with empty ordering codes, excluded
+from ordinary page roots. `3:0182` (`nav row`, library key `89990891013901+0:761`) and
+`3:0040` (`steering wheel`, `89990891013901+0:1365`) are two examples. Their canvas instances
+have valid `templateRef`s, but filtering the masters made `mainComponentId` disappear.
+Flattened Boolean overrides do not contain the master's full geometry.
+
+`mgCollectPageComponentDependencies` follows component references transitively from each
+page, retaining only required off-canvas masters (and enclosing variant sets). These roots
+are emitted with `parentId: null` and `libraryMaster: true`; the existing importer creates
+instances before removing them. Keep real canvas components out of this cleanup set.
+For a dependency shared by pages, `mgScopePageDependencyRecords` gives later copies
+`mgdep-<pageIndex>-<originalId>` IDs and remaps parents, children, roots and component links.
+This preserves global ID uniqueness and allows independently selecting either page.
+
+Container sequence `1c 07 06 01 0f <slot>` (`containerMeta.instanceRef`) identifies
+materialized raw overrides: absent scalar `07` means **visible**, even in a file otherwise
+classified as editor-style. Explicit `07 00` still wins. Synthesized descendants and raw
+records without `instanceRef` retain existing inheritance rules.
+
+0906 cross-tab against the export zip, all 224 raw records with `instanceRef`:
+
+| Scalar 07 | Count | Zip visibility | Mask 19 distribution |
+|---|---:|---|---|
+| absent | 201 | true, 201/201 | absent 157; 128: 29; 1: 14; 32: 1 |
+| 0 | 23 | false, 23/23 | 4: 15; 36: 4; 133: 2; 132: 1; 5: 1 |
+
+The correction restores five visible nav icons plus two dependent geometry/transform
+comparisons. It must not become a global “all absent visibility is true” rule.
+
+## 2026-09-06 · 杂记 full-editor inactive paint controls
+
+Full-editor paint records can include the entire inactive image object and adjustment
+object even on SOLID paints. `535:0789` (parent paint set `535:0787`) contains color
+61/255 in all channels; MasterGo UI independently shows `#3D3D3D` on `535:0784` (“0 西湖”).
+The old parser rejected this record and 769 canvas nodes consequently lost their fills.
+
+- Image object `0b`: consume scalar fields `05` / `06` and byte flag `09`. The sample
+  explicitly writes zero for these inactive fields; their meanings are not assigned.
+- Adjustment object `0d`: field IDs span **1 through 8**, not only powers of two.
+  Consume each zero-compressed float. Keep the established name mapping for 1/2/4/8;
+  do not invent semantics for 3/5/6/7. This sample writes all eight as zero.
+- Do not skip unknown payload by byte search. Continue sequential consumption and
+  reject tags outside the known grammar. A synthetic color-only record regression
+  includes both expanded subobjects and verifies the decoded color.
+
+This is independent of the file's HEIC image: the missing fills already exist in the
+decoded v2 records before any asset reaches Figma. HEIC is converted to PNG in the
+plugin UI; the native decoder and Python CLI retain the original asset bytes.
+
+## 2026-09-06 · Synced external typography (杂记 / 春节规划)
+
+Named font records can use `01 <id> 00 02 <displayName> 00 03 <sort> 00
+04 00 05 03 <font-body>`. The named-record scanner previously required a
+nonempty 04 value, rejecting all such records. Plain names on this explicit-empty
+04 spelling are TEXT style definitions **only if the font-body parser accepts
+the same id**; do not classify arbitrary layer names as styles. Existing category
+prefix detection remains unchanged.
+
+`213:542` stores PingFangSC-Semibold, 64px/77px; MasterGo displays the linked
+大标题 style. `213:674` stores 48px/58px; `213:688` stores PingFangSC-Regular
+36px with a 43px resolved line box. Their full data is in the .mg, despite the
+external library origin. Emit local style definitions and preserve bindings.
+
+Anonymous overrides may spell display family as `03 00` and retain the real
+PostScript name in field 0c (`213:0050`: PingFangSC-Semibold, 36px). Accept an
+empty family only when a usable font name is eventually present. No font-file
+installation is implied; the importer resolves the name against Figma's fonts.
+
+Font runs can contain `04 01` (also consume explicit 04 00) immediately after
+the style reference, before glyph data. Its semantic meaning is not assigned.
+Skipping this field previously discarded mixed runs and all their style refs.
+For mixed text, emit record-level `textStyleRanges` ({start,end,styleRef}, UTF-16),
+not a whole-node textStyleRef: the importer binds named ranges and leaves local
+overrides, e.g. semibold cost text, intact. UI merge namespaces these range refs.
+
+
+## 2026-09-06 · 自由抽屉半透明白色覆盖层
+
+`552:1892`（矩形 13）的填充引用 `552:1933` → paint `552:1934`，
+字段 08 的 ARGB 为 `(0.5, 1, 1, 1)`，同时显式写入 09=1。MasterGo
+属性面板显示 FFFFFF / 50%；原导入得到 opacity=1，遮住下方 12 个色块。
+SOLID 的 09=1 不应覆盖 08 alpha；09 非默认值仍沿用现有优先级。两者不能
+相乘：旧汇总 fixture 有 10 个填充/描边将同一透明度写在两处，相乘会重复衰减。
+本次仅修改解码器，importer 无改动。
+
+A/B 对本轮开始时的解码器（包含先前未提交修复）：汇总 1830 条记录完全相同；
+杂记 4387 条记录及结构不变，2217 个节点共 2234 个属性差异均为 paint opacity。
+自由抽屉 39 条记录仅矩形 13 的 fill opacity 从 1 变为 0.5。当前目录没有
+配对 zip，未声称运行 zip parity。测试 43 项，41 通过，2 项为已有失败。
+
+实际插件重导入自由抽屉成功，画布 38 节点（与原导入页一致）；新页
+`5:22129`「自由抽屉（透明度修复）」、容器 `5:22130`、覆盖层 `5:22143`。
+Figma API 确认白色填充 opacity=0.5；渲染截图中 12 个色块重新可见。
+原页保留。两端构建通过；该解码修复需重导入，刷新字体不会应用它。

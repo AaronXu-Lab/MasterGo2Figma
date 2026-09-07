@@ -1720,30 +1720,44 @@ ${style}`;
     return void 0;
   }
   function safeSetFills(node, fills) {
-    if (!("fills" in node)) return;
-    const normalized = normalizePaintsForFigma(fills);
-    try {
-      node.fills = normalized;
-    } catch (error) {
-      const fallbackFills = stripUnsupportedPaintExtras(normalized);
-      try {
-        node.fills = fallbackFills;
-      } catch (fallbackError) {
-        console.warn("Unable to set fills:", node.name, describePaintSetError(fallbackError, fallbackFills));
-      }
-    }
+    setPaintsIndependently(node, "fills", fills);
   }
   function safeSetStrokes(node, strokes) {
-    if (!("strokes" in node)) return;
-    const normalized = normalizePaintsForFigma(strokes);
+    setPaintsIndependently(node, "strokes", strokes);
+  }
+  function setPaintsIndependently(node, target, paints) {
+    if (!(target in node)) return;
+    const normalized = normalizePaintsForFigma(paints);
     try {
-      node.strokes = normalized;
+      node[target] = normalized;
+      return;
     } catch (error) {
-      const fallbackStrokes = stripUnsupportedPaintExtras(normalized);
+    }
+    const accepted = [];
+    for (const paint of normalized) {
+      const candidates = [paint, ...stripUnsupportedPaintExtras([paint])];
+      if (paint.type === "IMAGE") candidates.push({
+        type: "SOLID",
+        color: __spreadValues({}, MISSING_IMAGE_PLACEHOLDER_COLOR),
+        visible: paint.visible,
+        opacity: paint.opacity
+      });
+      let restored = false;
+      for (const candidate of candidates) {
+        try {
+          node[target] = [...accepted, candidate];
+          accepted.push(candidate);
+          restored = true;
+          break;
+        } catch (error) {
+        }
+      }
+      if (!restored) console.warn("Unable to set paint:", node.name, target, paint.type);
+    }
+    if (accepted.length === 0) {
       try {
-        node.strokes = fallbackStrokes;
-      } catch (fallbackError) {
-        console.warn("Unable to set strokes:", node.name, describePaintSetError(fallbackError, fallbackStrokes));
+        node[target] = [];
+      } catch (error) {
       }
     }
   }
@@ -1823,13 +1837,6 @@ ${style}`;
     if (value < 0) return 0;
     if (value > 1) return 1;
     return value;
-  }
-  function describePaintSetError(error, paints) {
-    return {
-      message: error instanceof Error ? error.message : String(error || "Unknown error"),
-      paintTypes: Array.isArray(paints) ? paints.map((paint) => paint && paint.type) : [],
-      blendModes: Array.isArray(paints) ? paints.map((paint) => paint && paint.blendMode).filter(Boolean) : []
-    };
   }
   function isNearlyZero(value) {
     return Math.abs(value) < 0.01;
@@ -2014,13 +2021,15 @@ ${style}`;
     });
   }
   function reapplyVectorStrokeGeometry(node, data) {
+    var _a, _b;
     const geometry = data && data.geometry;
     if (!geometry) return;
     if (geometry.strokeWeight !== void 0) safeSet(node, "strokeWeight", geometry.strokeWeight);
     if (geometry.strokeAlign) safeSet(node, "strokeAlign", geometry.strokeAlign);
     if (geometry.strokeJoin) safeSet(node, "strokeJoin", geometry.strokeJoin);
     if (geometry.dashPattern !== void 0) safeSet(node, "dashPattern", geometry.dashPattern);
-    if (geometry.strokeCap && !data.connectorFallbackPolyline) {
+    const hasVertexCaps = (_b = (_a = data.vectorNetwork) == null ? void 0 : _a.vertices) == null ? void 0 : _b.some((v) => v.strokeCap !== void 0);
+    if (geometry.strokeCap && !data.connectorFallbackPolyline && !hasVertexCaps) {
       safeSet(node, "strokeCap", normalizeMasterGoStrokeCapForFigma(geometry.strokeCap));
     }
   }
@@ -2681,7 +2690,9 @@ ${style}`;
             }
             session.figmaStyleIdByRef[style.id] = effectStyle.id;
           } else if (style.styleType === "TEXT" && style.fontName) {
-            const fontName = { family: String(style.fontName.family || "Inter"), style: String(style.fontName.style || "Regular") };
+            const requestedFont = { family: String(style.fontName.family || "Inter"), style: String(style.fontName.style || "Regular") };
+            yield ensureAvailableFontsLoaded();
+            const fontName = resolveAvailableFontName(requestedFont) || requestedFont;
             yield loadFontCached(fontName);
             const textStyle = figma.createTextStyle();
             textStyle.name = String(style.name);
@@ -2755,7 +2766,8 @@ ${style}`;
       const strokeRef = layerRecord.strokeStyleRef;
       const effectRef = layerRecord.effectStyleRef;
       const textRef = layerRecord.textStyleRef;
-      if (!fillRef && !strokeRef && !effectRef && !textRef) return;
+      const textRanges = layerRecord.textStyleRanges || [];
+      if (!fillRef && !strokeRef && !effectRef && !textRef && textRanges.length === 0) return;
       try {
         if (fillRef && map[fillRef] && "setFillStyleIdAsync" in node) yield node.setFillStyleIdAsync(map[fillRef]);
       } catch (error) {
@@ -2773,6 +2785,15 @@ ${style}`;
           yield node.setTextStyleIdAsync(map[textRef]);
         }
       } catch (error) {
+      }
+      if (node.type === "TEXT") {
+        for (const range of textRanges) {
+          if (!map[range.styleRef] || range.start < 0 || range.end > node.characters.length || range.end <= range.start) continue;
+          try {
+            yield node.setRangeTextStyleIdAsync(range.start, range.end, map[range.styleRef]);
+          } catch (error) {
+          }
+        }
       }
     });
   }
@@ -2801,10 +2822,10 @@ ${style}`;
     const path = String(message.path || "");
     const pending = pendingImportAssets[path];
     if (!pending) throw new Error(`\u56FE\u7247\u8D44\u6E90\u4F20\u8F93\u4E0D\u5B58\u5728\uFF1A${path}`);
-    const concatStartedAt = Date.now();
-    const bytes = concatBytes(pending.chunks, pending.size);
-    addImportTiming(session, "asset.concatBytesMs", Date.now() - concatStartedAt);
     try {
+      const concatStartedAt = Date.now();
+      const bytes = concatBytes(pending.chunks, pending.size);
+      addImportTiming(session, "asset.concatBytesMs", Date.now() - concatStartedAt);
       const imageStartedAt = Date.now();
       const image = figma.createImage(bytes);
       addImportTiming(session, "asset.createImageMs", Date.now() - imageStartedAt);
@@ -2814,8 +2835,9 @@ ${style}`;
     } catch (error) {
       console.warn("Unable to create Figma image from streamed asset:", path, error);
       for (const key of pending.keys.length > 0 ? pending.keys : [path]) recordStreamedMissingImage(key);
+    } finally {
+      delete pendingImportAssets[path];
     }
-    delete pendingImportAssets[path];
   }
   function startImportPage(message) {
     requireImportSession(message.transferId);
@@ -3461,11 +3483,26 @@ ${style}`;
       session.deferredInstanceRelinks = [];
       let swapped = 0;
       for (const entry of pending) {
-        const layerRecord = layers[entry.id];
+        const overrideLayers = entry.layers || layers;
+        const layerRecord = overrideLayers[entry.id];
         const shell = entry.node;
         if (!layerRecord || !layerRecord.mainComponentId || !shell || shell.removed) continue;
         const componentNode = session.restoredNodeById[layerRecord.mainComponentId];
-        if (!componentNode || componentNode.removed || componentNode.type !== "COMPONENT") continue;
+        if (!componentNode || componentNode.removed || componentNode.type !== "COMPONENT") {
+          if (!entry.layers) {
+            entry.layers = {};
+            const stack = [layerRecord.id];
+            while (stack.length) {
+              const id = stack.pop();
+              const record = overrideLayers[id];
+              if (!record || entry.layers[id]) continue;
+              entry.layers[id] = record;
+              stack.push(...record.childIds || []);
+            }
+          }
+          session.deferredInstanceRelinks.push(entry);
+          continue;
+        }
         const parent = shell.parent;
         if (!parent || !("insertChild" in parent)) continue;
         let instance = null;
@@ -3478,7 +3515,7 @@ ${style}`;
           if (instance) safeRemove(instance);
           continue;
         }
-        yield applyInstanceRecordState(instance, layerRecord, layers);
+        yield applyInstanceRecordState(instance, layerRecord, overrideLayers);
         session.restoredNodeById[layerRecord.id] = instance;
         safeRemove(shell);
         swapped++;

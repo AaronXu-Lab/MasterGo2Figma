@@ -26,5 +26,8 @@
     "tailwind-merge": "^3.6.0",
     "tailwindcss": "^3.4.19",
     "typescript": "*"
+  },
+  "dependencies": {
+    "heic-to": "1.5.2"
   }
 }

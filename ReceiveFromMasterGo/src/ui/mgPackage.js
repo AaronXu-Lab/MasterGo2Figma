@@ -295,9 +295,10 @@
     // fall back to the legacy heuristics. Offsets are UTF-16 code units.
     function mgParseFontRuns(bytes, start, end) {
       let p = start;
-      for (let guard = 0; guard < 4; guard++) {
+      for (let guard = 0; guard < 5; guard++) {
         const tag = bytes[p];
         if ((tag === 0x01 || tag === 0x02 || tag === 0x03) && bytes[p + 1] < 0x10) { p += 2; continue; }
+        if (tag === 0x05 && bytes[p + 1] === 0) { p += 2; continue; }
         break;
       }
       if (bytes[p] !== 0x06) return null;
@@ -321,6 +322,9 @@
         const ref = mgReadCString(bytes, p + 1, Math.min(end, p + 40));
         if (!ref || !/^[0-9]+:[0-9A-Za-z]+(?:\/[0-9]+:[0-9A-Za-z]+)*$/.test(ref.text)) return null;
         p = ref.end + 1;
+        // Explicit run flag on synced style overrides (e.g. mixed-size
+        // body/cost text). Consume before the optional glyph payload.
+        if (bytes[p] === 0x04 && bytes[p + 1] <= 1) p += 2;
         let fontString = null;
         if (bytes[p] === 0x05) {
           const glyphCount = bytes[p + 1];
@@ -659,6 +663,10 @@
             img.cropRect = rect;
             continue;
           }
+          // Full editor records serialize inactive image controls too.
+          // 05/06 are scalar controls and 09 is a byte flag (0906 杂记).
+          if (t === 0x05 || t === 0x06) { zfloat(); continue; }
+          if (t === 0x09) { p++; continue; }
           if (t === 0x07 || t === 0x08) {
             const v = zfloat();
             if (t === 0x07) img.intrinsicW = v; else img.intrinsicH = v;
@@ -693,9 +701,10 @@
             if (p >= end) return null;
             const st = bytes[p++];
             if (st === 0x00) break;
-            // Field ids are single bits; anything else means this record is
-            // not a paint (garbage records reach here with ids like 0x24).
-            if (st & (st - 1)) return null;
+            // Full editor records include all eight scalar controls, even
+            // on SOLID paints. Consume known slots without guessing names
+            // for the controls whose meaning has not been established.
+            if (st < 1 || st > 8) return null;
             const value = zfloat();
             const name = MG_IMAGE_FILTER_FIELDS[st];
             if (name) filters[name] = value;
@@ -768,10 +777,12 @@
         return finishPaint(paint);
       }
       if (color) {
-        // mgMakeSolidPaint already folded the `08` alpha into opacity.
+        // These are alternate opacity spellings, not multiplicative factors.
+        // Full editor exports write 09=1 even for translucent 08 colors;
+        // older exports can duplicate the same opacity in both fields.
         const paint = mgMakeSolidPaint(color.r, color.g, color.b, color.a);
         paint.visible = visible;
-        if (opacity !== null) paint.opacity = opacity;
+        if (opacity !== null && opacity !== 1) paint.opacity = opacity;
         return finishPaint(paint);
       }
       // Paint-shaped record with no color/kind at all: MasterGo's default fill.
@@ -991,7 +1002,7 @@
       { bytes: [0xe7, 0x89, 0xb9, 0xe6, 0x95, 0x88, 0x2f], category: "EFFECT" }, // 特效/
       { bytes: [0xe6, 0x8f, 0x8f, 0xe8, 0xbe, 0xb9, 0x2f], category: "STROKE" }  // 描边/
     ];
-    function mgScanStyleDefs(bytes, str) {
+    function mgScanStyleDefs(bytes, str, fontStyles) {
       const defs = {};
       const ID = "[0-9]+:[0-9A-Za-z]+";
       // The windows-1252 view keeps a 1:1 byte↔char offset mapping, so the
@@ -1011,6 +1022,14 @@
           }
           if (hit) { category = pref; break; }
         }
+        // Synced text styles use a plain display name (e.g. 大标题),
+        // without the category prefix. Only accept an already parsed font
+        // record, never arbitrary node names sharing this header shape.
+        const bodyStart = m.index + m[0].length;
+        if (!category && fontStyles && fontStyles[m[1]] &&
+            bytes[bodyStart] === 0x04 && bytes[bodyStart + 1] === 0x00) {
+          category = { category: "TEXT", bytes: [] };
+        }
         if (!category) continue;
         let name = "";
         try {
@@ -1023,7 +1042,7 @@
     }
 
     // Node type = the byte right after the `1c` tag.
-    const MG_TYPE = { 1: "VECTOR", 2: "LINE", 3: "RECTANGLE", 4: "ELLIPSE", 5: "POLYGON", 6: "STAR", 7: "FRAME", 8: "TEXT", 10: "SLICE" };
+    const MG_TYPE = { 1: "VECTOR", 2: "LINE", 3: "RECTANGLE", 4: "ELLIPSE", 5: "POLYGON", 6: "STAR", 7: "FRAME", 8: "TEXT", 10: "SLICE", 11: "CONNECTOR" };
 
     // Locate the real `1c` type tag inside a record block. A raw indexOf is not
     // enough: float payloads can contain 0x1c (e.g. height 1080 encodes as
@@ -1051,6 +1070,96 @@
         q = full.indexOf("\x1c", q + 1);
       }
       return weak;
+    }
+
+    // Native connector object (1c 0b). Endpoints are local coordinates;
+    // explicit elbow guides retain the route rather than guessing a diagonal.
+    function mgParseConnector(bytes, start, end) {
+      let p = start;
+      const result = { startCap: 0, endCap: 0, radius: 0, guides: [], lineType: 0 };
+      function point() {
+        const value = { x: 0, y: 0 };
+        while (p < end) {
+          const tag = bytes[p++];
+          if (!tag) return value;
+          if (tag === 1) {
+            const ref = mgReadCString(bytes, p, end);
+            if (!ref) return null;
+            p = ref.end + 1;
+            if (ref.text) value.nodeId = ref.text;
+          } else if (tag === 2) { value.magnet = bytes[p++]; }
+          else if (tag === 3 || tag === 4) {
+            const f = mgReadZeroFloat(bytes, p); p = f.next;
+            value[tag === 3 ? "x" : "y"] = f.value;
+          } else return null;
+        }
+        return null;
+      }
+      while (p < end) {
+        const tag = bytes[p++];
+        if (!tag) return result.start && result.end ? result : null;
+        if (tag === 1 || tag === 2 || tag === 6 || tag === 7 || tag === 9) {
+          const value = bytes[p++];
+          if (tag === 1) result.startCap = value;
+          if (tag === 2) result.endCap = value;
+          if (tag === 6) result.lineType = value;
+        } else if (tag === 3 || tag === 4) {
+          const value = point(); if (!value) return null;
+          result[tag === 3 ? "start" : "end"] = value;
+        } else if (tag === 8) {
+          const f = mgReadZeroFloat(bytes, p); p = f.next; result.radius = f.value;
+        } else if (tag === 5) {
+          const count = mgReadVarint(bytes, p); p = count.next;
+          if (count.value > 64) return null;
+          for (let i = 0; i < count.value; i++) {
+            const guide = {};
+            let terminated = false;
+            while (p < end) {
+              const field = bytes[p++];
+              if (!field) { terminated = true; break; }
+              if (field === 1) guide.axis = bytes[p++];
+              else if (field === 2 || field === 3) {
+                const f = mgReadZeroFloat(bytes, p); p = f.next;
+                guide[field === 2 ? "x" : "y"] = f.value;
+              } else return null;
+            }
+            if (!terminated) return null;
+            result.guides.push(guide);
+          }
+        } else return null;
+      }
+      return null;
+    }
+
+    function mgConnectorProps(connector) {
+      const start = { x: connector.start.x, y: connector.start.y };
+      const end = { x: connector.end.x, y: connector.end.y };
+      const cap = n => MG_STROKE_CAP[n] || "NONE";
+      const props = {
+        connectorStartLocal: start, connectorEndLocal: end,
+        connectorStartStrokeCap: cap(connector.startCap),
+        connectorEndStrokeCap: cap(connector.endCap),
+        connectorLineType: connector.lineType === 0 ? "ELBOWED" : "STRAIGHT",
+        connectorCornerRadius: connector.radius
+      };
+      // Observed manual horizontal guide: axis=1, field03=local y.
+      // Other guide spellings retain the importer's automatic route fallback.
+      if (connector.lineType === 0 && connector.guides.length === 1 &&
+          connector.guides[0].axis === 1 && Number.isFinite(connector.guides[0].y)) {
+        const y = connector.guides[0].y;
+        const points = [start, { x: start.x, y }, { x: end.x, y }, end];
+        props.vectorNetwork = {
+          vertices: points.map((v, i) => ({ ...v,
+            strokeCap: i === 0 ? cap(connector.startCap) : i === 3 ? cap(connector.endCap) : "NONE",
+            cornerRadius: i === 1 || i === 2 ? Math.min(connector.radius,
+              Math.hypot(v.x-points[i-1].x,v.y-points[i-1].y)/2,
+              Math.hypot(v.x-points[i+1].x,v.y-points[i+1].y)/2) : 0
+          })),
+          segments: [0,1,2].map(i => ({start:i,end:i+1,tangentStart:{x:0,y:0},tangentEnd:{x:0,y:0}})),
+          regions: []
+        };
+      }
+      return props;
     }
 
     // Zero-compressed float: a single 0x00 byte means 0, otherwise 4 float bytes.
@@ -1440,6 +1549,8 @@
           meta.subtype = "FRAME";
         }
       }
+      // Full editor FRAMEs explicitly write the inactive Boolean kind.
+      if (bytes[p] === 0x02 && bytes[p + 1] === 0) p += 2;
       if (bytes[p] === 0x03) { meta.clipsContent = bytes[p + 1] !== 0; sawStructural = true; p += 2; }
       if (bytes[p] === 0x04 && bytes[p + 1] === 0x04) {
         p += 2;
@@ -1824,7 +1935,7 @@
       // never match the third spelling: they carry a 04 name field between
       // the code and the scalars, and the `03 <family>` body check rejects
       // any impostor.
-      const re = new RegExp("\\x01(" + ID + ")\\x00(?:\\x02\\x00\\x03\\x00\\x04\\x00|\\x02[^\\x00]+\\x00\\x03[^\\x00]+\\x00(?:\\x04[^\\x00]+\\x00)?)?\\x05[\\x01-\\x07]", "g");
+      const re = new RegExp("\\x01(" + ID + ")\\x00(?:\\x02\\x00\\x03\\x00\\x04\\x00|\\x02[^\\x00]+\\x00\\x03[^\\x00]+\\x00(?:\\x04[^\\x00]*\\x00)?)?\\x05[\\x01-\\x07]", "g");
       let m;
       while ((m = re.exec(str))) {
         let p = m.index + m[0].length;
@@ -1836,7 +1947,8 @@
         if (bytes[p] === 0x01) {
           // 2 = STRIKETHROUGH (legacy fixtures), 4 = STRIKETHROUGH (0712-3
           // round-trip specimen); anything else observed decorated = UNDERLINE.
-          entry.decoration = (bytes[p + 1] === 2 || bytes[p + 1] === 4) ? "STRIKETHROUGH" : "UNDERLINE";
+          entry.decoration = bytes[p + 1] === 0 ? "NONE"
+            : (bytes[p + 1] === 2 || bytes[p + 1] === 4) ? "STRIKETHROUGH" : "UNDERLINE";
           p += 2;
         }
         // 0711-3 entries carry a `02 <varint>` stamp before the family field.
@@ -1853,7 +1965,7 @@
         // "ReeJi-BigRuixain-BlackGBV1.0") — rejecting them dropped 22 of the
         // 临时测试 fixture's 27 text-style entries, and with them every
         // fontSize/lineHeight/letterSpacing on those texts.
-        if (!/^[A-Za-z][A-Za-z0-9 .+-]{1,40}$/.test(family)) continue;
+        if (family && !/^[A-Za-z][A-Za-z0-9 .+-]{1,40}$/.test(family)) continue;
         entry.psName = family; // legacy field name: full-export entries put the PostScript name here
         entry.family = family;
         p = q + 1;
@@ -1922,6 +2034,8 @@
           }
           break;
         }
+        // A local override may omit the display family and keep only 0c.
+        if (!entry.family && !entry.psName) continue;
         if (styles[m[1]] === undefined) styles[m[1]] = entry;
       }
       return styles;
@@ -2275,6 +2389,7 @@
           cornerRadius: cornerRadius, cornerRadii: cornerRadii, name: name, code: mk.code,
           relativeTransform: transform.relativeTransform, rotation: mgNormalizeRotation(transform.rotation),
           containerMeta: containerMeta, geomHash: geomHash,
+          connector: typeByte === 11 ? mgParseConnector(bytes, fb + jt + 2, end) : null,
           templateRef: scalar.templateRef || null,
           hasExplicitSize: !!(scalar.present[0x0e] || scalar.present[0x0f]),
           hasExplicitW: !!scalar.present[0x0e], hasExplicitH: !!scalar.present[0x0f],
@@ -2830,6 +2945,7 @@
       // flag only; instance mirrors inherit it through the cloned template
       // record's trailer).
       if (trailer.absolute) props.layout.layoutPositioning = "ABSOLUTE";
+      if (t === "CONNECTOR" && n.connector) Object.assign(props, mgConnectorProps(n.connector));
       if (t === "TEXT") {
         props.characters = n.characters || n.name || "";
         props.textAlignHorizontal = MG_TEXT_ALIGN_H[n.textAlignH] || "LEFT";
@@ -3612,8 +3728,12 @@
       return rebased;
     }
 
-    function mgResolveInstanceVisibility(ownVisibleByte, overrideMask19, slotVisibleByte, isRawRecord) {
+    function mgResolveInstanceVisibility(ownVisibleByte, overrideMask19, slotVisibleByte, isRawRecord, hasInstanceRef) {
       if (ownVisibleByte !== undefined) return ownVisibleByte;
+      // `06 01 0f <slot>` records materialize visibility: omitted 07 is
+      // visible, even in an editor file whose other stubs inherit it. 0906:
+      // 201 omitted => visible, 23 explicit zero => hidden, no exceptions.
+      if (isRawRecord && hasInstanceRef) return 1;
       // Share-export shallow records default to visible when the 0x04 mask
       // bit is set or the mask is absent. 0711-3 full-export stubs carry no
       // mask at all; they inherit the template child's visibility (27 hidden
@@ -4045,7 +4165,8 @@
             // default) — 0712-2 icon cross-tab: explicit `07 00` = hidden
             // 18/18, omitted = visible 6/6.
             mirror ? (mirror.visibleByte !== undefined ? mirror.visibleByte : 1) : slot.visibleByte,
-            n.isRawRecord
+            n.isRawRecord,
+            !!(n.containerMeta && n.containerMeta.instanceRef)
           );
           // Translation inheritance is only evidenced for shallow FRAME
           // records whose slot is a Boolean operation. Those records decode
@@ -4394,6 +4515,62 @@
       return slim;
     }
 
+    // Retain only off-canvas masters actually needed by this page, including
+    // nested component dependencies. Every page must be independently importable
+    // because the UI lets users select a subset of pages.
+    function mgCollectPageComponentDependencies(roots, nodes, childIds, canvasIds) {
+      const seen = new Set();
+      const dependencyIds = new Set();
+      const dependencies = [];
+      const stack = roots.slice();
+      while (stack.length) {
+        const id = stack.pop();
+        const node = nodes[id];
+        if (seen.has(id) || !node || !node.type) continue;
+        seen.add(id);
+        for (const childId of childIds[id] || []) stack.push(childId);
+        const component = nodes[node.templateRef];
+        if (!component || !component.containerMeta ||
+            component.containerMeta.subtype !== "COMPONENT" || canvasIds[component.id]) continue;
+        // Preserve the enclosing variant set when one exists. Never promote
+        // arbitrary off-page frames or whole embedded-library pages.
+        const parent = nodes[component.parent];
+        const root = parent && parent.containerMeta && parent.containerMeta.subtype === "COMPONENT_SET"
+          ? parent : component;
+        if (canvasIds[root.id] || dependencyIds.has(root.id)) continue;
+        dependencyIds.add(root.id);
+        dependencies.push(root.id);
+        stack.push(root.id);
+      }
+      return dependencies;
+    }
+
+    function mgScopePageDependencyRecords(records, roots, emittedIds, pageIndex) {
+      const aliases = {};
+      for (const record of records) {
+        if (emittedIds.has(record.id)) aliases[record.id] = `mgdep-${pageIndex}-${record.id}`;
+        emittedIds.add(record.id);
+      }
+      return {
+        roots: roots.map(id => aliases[id] || id),
+        records: records.map(record => {
+          // Only shared dependency copies need a deep copy. Paint aliasing
+          // mutates geometry later, so the two pages must not share arrays.
+          const copy = aliases[record.id] ? JSON.parse(JSON.stringify(record)) : { ...record };
+          copy.id = aliases[record.id] || record.id;
+          copy.parentId = aliases[record.parentId] || record.parentId;
+          copy.childIds = record.childIds.map(id => aliases[id] || id);
+          if (record.mainComponentId) copy.mainComponentId = aliases[record.mainComponentId] || record.mainComponentId;
+          if (aliases[record.id]) {
+            copy.props.id = copy.id;
+            copy.props.parentID = copy.parentId;
+          }
+          if (record.libraryMaster && roots.includes(record.id)) copy.index = roots.indexOf(record.id);
+          return copy;
+        })
+      };
+    }
+
     function convertMgPackageToV2Entries(zipEntries, fileName, options) {
       const documentBytes = getEntryByName(zipEntries, "document");
       if (!documentBytes) throw new Error(`"${fileName}" 不是有效的 .mg 文件（缺少 document）`);
@@ -4403,7 +4580,7 @@
       if (metaBytes) { try { meta = JSON.parse(decodeUtf8(metaBytes)); } catch (e) { /* ignore */ } }
 
       const { nodes, paints, geoms, fontStyles, effectTable, exportTable } = mgDecodeNativeNodes(documentBytes);
-      const styleDefs = mgScanStyleDefs(documentBytes, new TextDecoder("latin1").decode(documentBytes));
+      const styleDefs = mgScanStyleDefs(documentBytes, new TextDecoder("latin1").decode(documentBytes), fontStyles);
       const embeddedProps = mgExtractEmbeddedProps(documentBytes);
       const embeddedIndex = mgBuildEmbeddedIndex(embeddedProps);
       const embeddedOverlayUsed = {};
@@ -4544,6 +4721,27 @@
       }
       if (Object.keys(reachable).length === 0) throw new Error(`"${fileName}" 中没有可识别的页面图层`);
 
+      // Codeless library masters are absent from MasterGo's canvas traversal,
+      // but dropping them from the package also drops mainComponentId and
+      // forces instances to use lossy flattened/empty Boolean records.
+      const canvasIds = Object.assign({}, reachable);
+      const dependencyRoots = {};
+      for (const pg of pageList) {
+        const dependencies = mgCollectPageComponentDependencies(pg.roots, nodes, childIds, canvasIds);
+        const pageIds = new Set();
+        for (const root of pg.roots) for (const id of subtreeOf(root)) pageIds.add(id);
+        for (const root of dependencies) {
+          dependencyRoots[root] = true;
+          rootIndexOverride[root] = pg.roots.length;
+          pg.roots.push(root);
+          for (const id of subtreeOf(root)) {
+            reachable[id] = true;
+            pageIds.add(id);
+          }
+        }
+        pg.count = pageIds.size;
+      }
+
       // NOTE on variant names: MasterGo spells them `Size[a2]=Large,Type[a0]=…`
       // and its OWN zip exporter keeps that raw form for 11 of 12 specimen
       // variants (only one came out normalized) — so the decoder emits the
@@ -4615,7 +4813,7 @@
           version: 2,
           id: id,
           pageId: "",
-          parentId: (nodes[n.parent] ? n.parent : null),
+          parentId: dependencyRoots[id] ? null : (nodes[n.parent] ? n.parent : null),
           index: rootIndexOverride[id] != null ? rootIndexOverride[id] : (indexInParent[id] || 0),
           name: recordName,
           childIds: (childIds[id] || []).filter(isEmittedChild),
@@ -4623,8 +4821,8 @@
         };
         // Instance records remember their component (tag 1a template ref) so
         // the importer can re-link them via component.createInstance(). The
-        // component's own record must exist in the package (full exports keep
-        // masters on canvas; share exports drop them → no id, frame fallback).
+        // component's own record must exist in the package (including the
+        // off-canvas dependency masters retained above).
         // MasterGo instances carry a uniform scale (trailer 26) that Figma
         // instances cannot express via child geometry (instance children are
         // locked to the component); the importer replays it with
@@ -4665,7 +4863,7 @@
         // 组 16567 sits inside 首页/正 and was deleted from the canvas when the
         // key alone set the flag (the importer removes flagged roots after
         // instances re-link).
-        if (n.containerMeta && n.containerMeta.libraryKey && !nodes[n.parent]) record.libraryMaster = true;
+        if (dependencyRoots[id] || (n.containerMeta && n.containerMeta.libraryKey && !nodes[n.parent])) record.libraryMaster = true;
         // Trailer flag `1e 01` = MasterGo renders the mask's own fill (record
         // level, invisible to the comparator). Cross-tab over 0806 + 临时测试:
         // both proven-painted masks (tab-bar 圆形 865) carry it, both
@@ -4676,6 +4874,12 @@
         if (n.strokeRef && styleDefs[n.strokeRef]) record.strokeStyleRef = n.strokeRef;
         if (n.cornerRef && styleDefs[n.cornerRef]) record.effectStyleRef = n.cornerRef;
         if (n.textStyleRef && styleDefs[n.textStyleRef]) record.textStyleRef = n.textStyleRef;
+        if (Array.isArray(n.fontRuns) && n.fontRuns.length > 1) {
+          delete record.textStyleRef; // a whole-node binding would flatten mixed typography
+          const ranges = n.fontRuns.filter(run => styleDefs[run.styleRef])
+            .map(run => ({ start: run.start, end: run.end, styleRef: run.styleRef }));
+          if (ranges.length) record.textStyleRanges = ranges;
+        }
         records.push(record);
       }
       // layoutPositioning now comes from the real per-node trailer flag
@@ -4724,6 +4928,17 @@
       const out = {};
       const recordsById = {};
       for (const record of records) recordsById[record.id] = record;
+
+      // v2 requires globally unique layer ids. A master needed by two pages
+      // is copied with page-local ids and all instance links redirected; this
+      // also lets either page import without the other one being selected.
+      const emittedRecordIds = new Set();
+      for (let pi = 0; pi < pageList.length; pi++) {
+        const pg = pageList[pi];
+        const scoped = mgScopePageDependencyRecords(collectPageRecords(pg), pg.roots, emittedRecordIds, pi);
+        pg.records = scoped.records;
+        pg.roots = scoped.roots;
+      }
 
       // The v2 exporter names image assets image-001, image-002, … in first-use
       // order; alias the decoder's hash-based refs the same way so packages
@@ -4777,6 +4992,7 @@
       }
 
       function collectPageRecords(pg) {
+        if (pg.records) return pg.records;
         const seen = {};
         const result = [];
         for (const root of pg.roots) {
@@ -4924,7 +5140,12 @@
       walkScalarFields: mgWalkScalarFields,
       normalizeRotation: mgNormalizeRotation,
       parseTextRuns: mgParseTextRuns,
+      parseConnector: mgParseConnector,
+      connectorProps: mgConnectorProps,
+      parseFontRuns: mgParseFontRuns,
       scanPaints: mgScanPaints,
+      scanFontStyles: mgScanFontStyles,
+      scanStyleDefs: mgScanStyleDefs,
       slimInstanceDescendantProps: mgSlimInstanceDescendantProps,
       resolveBooleanLeafSize: mgResolveBooleanLeafSize,
       scaleByConstraint: mgScaleByConstraint,
@@ -4932,7 +5153,9 @@
       radialAxisRatio: mgRadialAxisRatio,
       radialGradientTransform: mgRadialGradientTransform,
       rebaseContainerByAnchor: mgRebaseContainerByAnchor,
-      usesCenteredGroupResize: mgUsesCenteredGroupResize
+      usesCenteredGroupResize: mgUsesCenteredGroupResize,
+      collectPageComponentDependencies: mgCollectPageComponentDependencies,
+      scopePageDependencyRecords: mgScopePageDependencyRecords
     }
   };
 

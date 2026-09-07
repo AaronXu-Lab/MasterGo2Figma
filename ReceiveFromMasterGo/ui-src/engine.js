@@ -1,3 +1,5 @@
+import { prepareImageAssetBytes } from "./imageAssets.js";
+
 // Framework-free import engine, ported verbatim from the old ui.template.html
 // inline script. Owns the package state (manifest/entries), the zip/.mg
 // parsing, and the chunked import stream to the plugin main thread. The React
@@ -525,6 +527,7 @@ function prepareRecordForImport(record, prefix, assetKeys) {
   if (record.strokeStyleRef) record.strokeStyleRef = `${prefix}${record.strokeStyleRef}`;
   if (record.effectStyleRef) record.effectStyleRef = `${prefix}${record.effectStyleRef}`;
   if (record.textStyleRef) record.textStyleRef = `${prefix}${record.textStyleRef}`;
+  for (const range of record.textStyleRanges || []) range.styleRef = `${prefix}${range.styleRef}`;
   if (record.props) {
     prepareImportProps(record.props, prefix, assetKeys);
   }
@@ -834,17 +837,19 @@ function getImportPageEndTimeoutMs(pageData, assetTransfers) {
 
 async function streamImportAsset(transferId, asset) {
   const assetSendStartedAt = Date.now();
+  const preparedBytes = await prepareImageAssetBytes(asset.bytes, asset.path);
+  importAssetBytesTotal += preparedBytes.length - asset.bytes.length;
   await sendImportRequest({
     type: "import-asset-start",
     transferId,
     path: asset.path,
     keys: asset.keys,
-    size: asset.bytes.length
+    size: preparedBytes.length
   });
   setStageProgress("assets", importAssetBytesDone, importAssetBytesTotal);
 
-  for (let offset = 0, chunkIndex = 0; offset < asset.bytes.length; offset += IMPORT_CHUNK_SIZE, chunkIndex++) {
-    const bytes = asset.bytes.slice(offset, offset + IMPORT_CHUNK_SIZE);
+  for (let offset = 0, chunkIndex = 0; offset < preparedBytes.length; offset += IMPORT_CHUNK_SIZE, chunkIndex++) {
+    const bytes = preparedBytes.slice(offset, offset + IMPORT_CHUNK_SIZE);
     send({
       type: "import-asset-chunk",
       transferId,
@@ -863,7 +868,7 @@ async function streamImportAsset(transferId, asset) {
     path: asset.path
   }, 60000);
   addClientTiming("ui.asset.sendMs", Date.now() - assetSendStartedAt);
-  addClientTimingBytes("ui.asset.bytes", asset.bytes.length);
+  addClientTimingBytes("ui.asset.bytes", preparedBytes.length);
   setStageProgress("assets", importAssetBytesDone, importAssetBytesTotal);
 }
 

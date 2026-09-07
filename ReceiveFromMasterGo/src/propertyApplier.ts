@@ -32,7 +32,9 @@ function reapplyVectorStrokeGeometry(node: VectorNode, data: any) {
     if (geometry.strokeAlign) safeSet(node, "strokeAlign", geometry.strokeAlign);
     if (geometry.strokeJoin) safeSet(node, "strokeJoin", geometry.strokeJoin);
     if (geometry.dashPattern !== undefined) safeSet(node, "dashPattern", geometry.dashPattern);
-    if (geometry.strokeCap && !data.connectorFallbackPolyline) {
+    // Setting a uniform cap after the network erases its per-endpoint arrows.
+    const hasVertexCaps = data.vectorNetwork?.vertices?.some((v: any) => v.strokeCap !== undefined);
+    if (geometry.strokeCap && !data.connectorFallbackPolyline && !hasVertexCaps) {
         safeSet(node, "strokeCap", normalizeMasterGoStrokeCapForFigma(geometry.strokeCap));
     }
 }
