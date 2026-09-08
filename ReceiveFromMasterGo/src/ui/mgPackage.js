@@ -264,9 +264,15 @@
     function mgNormalizeFontName(fontName) {
       if (!fontName) return fontName;
       const styleMap = { SemiBold: "Semi Bold", DemiBold: "Semi Bold" };
+      // English PingFang families expose English weights in the plugin API;
+      // localized families retain their localized face names in ZIP exports.
+      const pingFangStyles = { "常规体": "Regular", "中黑体": "Medium", "中粗体": "Semibold",
+        "细体": "Light", "纤细体": "Thin", "极细体": "Ultralight" };
+      const localizedStyle = /^PingFang (SC|TC|HK|MO)$/.test(fontName.family || "")
+        ? pingFangStyles[fontName.style] : null;
       return {
         family: fontName.family || "Inter",
-        style: styleMap[fontName.style] || fontName.style || "Regular"
+        style: localizedStyle || styleMap[fontName.style] || fontName.style || "Regular"
       };
     }
 
@@ -1444,6 +1450,8 @@
           }
           if (t >= 0x1e && t <= 0x3f) {
             if (t === 0x1e) fields.t1e = bytes[p + 1];
+            if (t === 0x2f) fields.t2f = bytes[p + 1];
+            if (t === 0x36) fields.t36 = bytes[p + 1];
             if (t === 0x2c) fields.strokeCap = bytes[p + 1];
             // 2e 01 = layoutPositioning ABSOLUTE (ignore auto-layout).
             // Cross-tab on 统一集: all 5 v2-ABSOLUTE nodes carry it, none of
@@ -1479,6 +1487,14 @@
         idx = str.indexOf("\x1d\x01", idx + 2);
       }
       return null;
+    }
+
+    function mgMaskRendersFill(trailer) {
+      // 09008's two painted button masks use the paired 2f=1 / 36=1
+      // spelling instead of legacy 1e=1. Other masks lack this pair. Do not
+      // infer either field's standalone semantics or enable every new mask.
+      return !!(trailer && (trailer.t1e === 1 ||
+        (trailer.t2f === 1 && trailer.t36 === 1)));
     }
 
     // MasterGo blend-mode enum: the standard blend list without the LINEAR_*
@@ -1942,7 +1958,7 @@
         const entry = {
           psName: null, family: null, styleName: null, decoration: null,
           fontSize: null, lineHeight: null, textCase: null,
-          lineHeightPx: false, letterSpacing: 0, letterSpacingPx: false
+          lineHeightPx: false, lineHeightPercent: false, letterSpacing: 0, letterSpacingPx: false
         };
         if (bytes[p] === 0x01) {
           // 2 = STRIKETHROUGH (legacy fixtures), 4 = STRIKETHROUGH (0712-3
@@ -1960,12 +1976,13 @@
         if (bytes[p] !== 0x03) continue; // not a font entry
         let q = p + 1;
         while (q < bytes.length && bytes[q] !== 0x00) q++;
-        const family = str.slice(p + 1, q);
-        // Dots are legal family characters ("Alibaba PuHuiTi 3.0",
+        const family = decodeUtf8(bytes.subarray(p + 1, q));
+        // Read names as UTF-8 (09008 also stores 苹方-简). Keep control bytes
+        // out of the bounded name grammar. Dots are legal ("Alibaba PuHuiTi 3.0",
         // "ReeJi-BigRuixain-BlackGBV1.0") — rejecting them dropped 22 of the
         // 临时测试 fixture's 27 text-style entries, and with them every
         // fontSize/lineHeight/letterSpacing on those texts.
-        if (family && !/^[A-Za-z][A-Za-z0-9 .+-]{1,40}$/.test(family)) continue;
+        if (family && !/^[A-Za-z\u3400-\u9fff][A-Za-z0-9\u3400-\u9fff .+-]{0,60}$/.test(family)) continue;
         entry.psName = family; // legacy field name: full-export entries put the PostScript name here
         entry.family = family;
         p = q + 1;
@@ -2014,13 +2031,13 @@
               p = c.end + 1;
               continue;
             }
-            if (!/^[A-Za-z][A-Za-z0-9 .+-]{0,60}$/.test(c.text)) break;
+            if (!/^[A-Za-z\u3400-\u9fff][A-Za-z0-9\u3400-\u9fff .+-]{0,60}$/.test(c.text)) break;
             if (tag === 0x0c) entry.psName = c.text;
             else entry.styleName = c.text;
             p = c.end + 1;
             continue;
           }
-          if (tag === 0x07) { p += 2; continue; } // 0711-3 one-byte flag
+          if (tag === 0x07) { entry.lineHeightPercent = bytes[p + 1] === 1; p += 2; continue; }
           if (tag === 0x0e) { const r = mgReadZeroFloat(bytes, p + 1); p = r.next; continue; }
           if (tag === 0x0f) { // font-file hash: marks a per-node COMPUTED entry
             const c = mgReadCString(bytes, p + 1, Math.min(bytes.length, p + 40));
@@ -2049,6 +2066,13 @@
       const value = entry.letterSpacing || 0;
       if (entry.letterSpacingPx) return { value: value * (scale || 1), unit: "PIXELS" };
       return { value: value, unit: "PERCENT" };
+    }
+
+    function mgLineHeightFromStyleEntry(entry, scale, computedEntry) {
+      if (!entry || !(entry.lineHeight > 0)) return { unit: "AUTO" };
+      if (entry.lineHeightPercent) return { value: entry.lineHeight, unit: "PERCENT" };
+      if (computedEntry && !entry.lineHeightPx) return { unit: "AUTO" };
+      return { value: entry.lineHeight * (scale || 1), unit: "PIXELS" };
     }
 
     // Resolve a fontName from a style-table entry. Preference order: explicit
@@ -2978,9 +3002,7 @@
           // stores the RESOLVED line box even for AUTO text; there the `06 01`
           // PIXELS flag is the only trustworthy unit signal.
           const computedEntry = !mgShareModeActive && !!style.fontFileHash;
-          props.lineHeight = (style.lineHeight !== null && style.lineHeight > 0 && (!computedEntry || style.lineHeightPx))
-            ? { value: style.lineHeight * styleScale, unit: "PIXELS" }
-            : { unit: "AUTO" };
+          props.lineHeight = mgLineHeightFromStyleEntry(style, styleScale, computedEntry);
         } else {
           props.fontSize = mgGuessTextFontSize(n) * scale;
           props.fontName = n.fontName || { family: "Inter", style: "Regular" };
@@ -3177,9 +3199,7 @@
                 ? mgLetterSpacingFromStyleEntry(entry, 1)
                 : mgCloneJsonValue(props.letterSpacing || { value: 0, unit: "PERCENT" }),
               lineHeight: entry
-                ? ((entry.lineHeight !== null && entry.lineHeight > 0)
-                  ? { value: entry.lineHeight, unit: "PIXELS" }
-                  : { unit: "AUTO" })
+                ? mgLineHeightFromStyleEntry(entry, 1, !mgShareModeActive && !!entry.fontFileHash)
                 : mgCloneJsonValue(props.lineHeight),
               fills: segFills
             });
@@ -4515,6 +4535,19 @@
       return slim;
     }
 
+    function mgIsPageRootNode(node, nodes) {
+      if (!node || !node.type) return false;
+      const meta = node.containerMeta;
+      const isMaster = meta && (meta.subtype === "COMPONENT" || meta.subtype === "COMPONENT_SET");
+      if (!isMaster) return true;
+      // Synced library copies can retain their library's ordering code while
+      // being owned by this page. This is the same off-canvas classification
+      // used for libraryMaster cleanup; exclude them BEFORE reachability so
+      // only actual references can bring them back. Nested canvas components
+      // and ordinary sort-coded local masters are not library copies.
+      return !!node.code && !(meta.libraryKey && !nodes[node.parent]);
+    }
+
     // Retain only off-canvas masters actually needed by this page, including
     // nested component dependencies. Every page must be independently importable
     // because the UI lets users select a subset of pages.
@@ -4532,11 +4565,11 @@
         const component = nodes[node.templateRef];
         if (!component || !component.containerMeta ||
             component.containerMeta.subtype !== "COMPONENT" || canvasIds[component.id]) continue;
-        // Preserve the enclosing variant set when one exists. Never promote
-        // arbitrary off-page frames or whole embedded-library pages.
-        const parent = nodes[component.parent];
-        const root = parent && parent.containerMeta && parent.containerMeta.subtype === "COMPONENT_SET"
-          ? parent : component;
+        // A referenced variant can create instances on its own. Promoting it
+        // to its set imports every unused sibling and their dependencies;
+        // large library sets contain thousands of variants. Keep the exact
+        // component subtree; real canvas sets remain in the page roots.
+        const root = component;
         if (canvasIds[root.id] || dependencyIds.has(root.id)) continue;
         dependencyIds.add(root.id);
         dependencies.push(root.id);
@@ -4676,23 +4709,15 @@
       const reachable = {};
       const pageList = [];
       const rootIndexOverride = {};
-      // Component/component-set masters live off-canvas: in share exports they
-      // share the page owner, so drop them from the page roots explicitly.
-      function isComponentMaster(id) {
-        const n = nodes[id];
-        const sub = n && n.containerMeta && n.containerMeta.subtype;
-        return sub === "COMPONENT" || sub === "COMPONENT_SET";
-      }
       for (const pg of mgPages) {
         // Off-canvas registry masters merely share the page owner and carry
         // no sort code — drop those from the page roots (share exports store
         // ALL masters that way; editor exports of a library file still hold a
-        // few codeless foreign masters, e.g. pasted icons). Sort-CODED
-        // masters legitimately sit ON the canvas and must stay — dropping
-        // them lost all 20 of the Tesla fixture's components, and the 大文件
-        // 0804 design system keeps every button/button-group master as a
-        // coded canvas root.
-        const roots = (childIds[pg.id] || []).filter(r => nodes[r] && nodes[r].type && !(isComponentMaster(r) && !nodes[r].code));
+        // few codeless foreign masters, e.g. pasted icons). Keep sort-coded
+        // local canvas masters (Tesla/0804 library documents), but exclude
+        // page-owned library-keyed copies even when they have a sort code
+        // (09008). Referenced copies are added below as dependencies.
+        const roots = (childIds[pg.id] || []).filter(r => mgIsPageRootNode(nodes[r], nodes));
         // Library-master copies never appear in MasterGo's own page traversal
         // (the importer removes them after re-linking), so they must not
         // consume sibling indexes — the real canvas roots number consecutively.
@@ -4869,7 +4894,7 @@
         // both proven-painted masks (tab-bar 圆形 865) carry it, both
         // proven-unpainted ones (橙卡 矩形 148535, default-gray 矩形 148830)
         // lack it. The importer only paints a mask twin when this is not false.
-        if (n.isMask === true) record.maskRendersFill = !!(n.trailer && n.trailer.t1e === 1);
+        if (n.isMask === true) record.maskRendersFill = mgMaskRendersFill(n.trailer);
         if (n.paintRef && styleDefs[n.paintRef]) record.fillStyleRef = n.paintRef;
         if (n.strokeRef && styleDefs[n.strokeRef]) record.strokeStyleRef = n.strokeRef;
         if (n.cornerRef && styleDefs[n.cornerRef]) record.effectStyleRef = n.cornerRef;
@@ -5091,8 +5116,7 @@
               id: sid, styleType: "TEXT", name: def.name,
               fontName: mgFontNameFromStyleEntry(entry) || { family: "Inter", style: "Regular" },
               fontSize: (entry.fontSize !== null && entry.fontSize > 0) ? entry.fontSize : 12,
-              lineHeight: (entry.lineHeight !== null && entry.lineHeight > 0)
-                ? { value: entry.lineHeight, unit: "PIXELS" } : { unit: "AUTO" },
+              lineHeight: mgLineHeightFromStyleEntry(entry, 1, !mgShareModeActive && !!entry.fontFileHash),
               letterSpacing: mgLetterSpacingFromStyleEntry(entry, 1),
               textCase: entry.textCase || "ORIGINAL",
               textDecoration: entry.decoration || "NONE"
@@ -5145,6 +5169,8 @@
       parseFontRuns: mgParseFontRuns,
       scanPaints: mgScanPaints,
       scanFontStyles: mgScanFontStyles,
+      lineHeightFromStyleEntry: mgLineHeightFromStyleEntry,
+      maskRendersFill: mgMaskRendersFill,
       scanStyleDefs: mgScanStyleDefs,
       slimInstanceDescendantProps: mgSlimInstanceDescendantProps,
       resolveBooleanLeafSize: mgResolveBooleanLeafSize,
@@ -5155,6 +5181,7 @@
       rebaseContainerByAnchor: mgRebaseContainerByAnchor,
       usesCenteredGroupResize: mgUsesCenteredGroupResize,
       collectPageComponentDependencies: mgCollectPageComponentDependencies,
+      isPageRootNode: mgIsPageRootNode,
       scopePageDependencyRecords: mgScopePageDependencyRecords
     }
   };

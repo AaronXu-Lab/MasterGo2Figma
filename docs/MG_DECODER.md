@@ -1075,7 +1075,8 @@ have valid `templateRef`s, but filtering the masters made `mainComponentId` disa
 Flattened Boolean overrides do not contain the master's full geometry.
 
 `mgCollectPageComponentDependencies` follows component references transitively from each
-page, retaining only required off-canvas masters (and enclosing variant sets). These roots
+page, retaining only required off-canvas masters (exact referenced variants, without their
+enclosing sets; corrected in 09008 below). These roots
 are emitted with `parentId: null` and `libraryMaster: true`; the existing importer creates
 instances before removing them. Keep real canvas components out of this cleanup set.
 For a dependency shared by pages, `mgScopePageDependencyRecords` gives later copies
@@ -1162,3 +1163,68 @@ A/B 对本轮开始时的解码器（包含先前未提交修复）：汇总 183
 `5:22129`「自由抽屉（透明度修复）」、容器 `5:22130`、覆盖层 `5:22143`。
 Figma API 确认白色填充 opacity=0.5；渲染截图中 12 个色块重新可见。
 原页保留。两端构建通过；该解码修复需重导入，刷新字体不会应用它。
+
+
+## 2026-09-08 · Sort-coded library copies and variant dependency scope (09008)
+
+A nonempty ordering code does not by itself prove canvas membership. The 09008
+share file stores page-owned synced COMPONENT_SET copies with both a code and
+`containerMeta.libraryKey`: `3:23799` (Button, 1,800 variants), `3:20089` and
+`3:23798` (Tag, 1,440 variants each). All are absent from the six-root / 756-record
+SendToFigma baseline. They were already marked `libraryMaster` for eventual
+cleanup, but incorrectly admitted to initial page reachability.
+
+`mgIsPageRootNode` excludes page-root components/sets with a library key and no
+resolvable node parent, as well as codeless registry masters. Sort-coded local
+canvas masters remain; library-keyed components nested in real canvas frames
+remain. This moves the existing temporary-master classification ahead of
+reachability; it does not broaden cleanup to all library-keyed nodes.
+
+Dependency discovery retains the exact referenced COMPONENT subtree, without
+promoting a variant to its COMPONENT_SET. `createInstance()` needs the component,
+not all sibling variants. Traverse nested references transitively, deduplicate
+cycles, and preserve per-page dependency aliases. Never prune global child lists:
+real canvas component sets must retain all their variants.
+
+09008: 23,647 → 777 records (756 canvas + 21 records in five temporary master
+subtrees). All 756 canvas props and component links are unchanged; no dangling
+mainComponentId. Full and UI-slim conversion agree on structure. This changes
+package reachability only, not binary tag interpretation or importer behavior.
+
+### 2026-09-08 · 09008 UTF-8 font entries and percent line-height flag
+
+Font-table field `03` is a NUL-terminated **UTF-8** string, not a slice of the
+Latin-1 binary search string. The accepted name grammar now includes CJK
+U+3400–U+9FFF alongside ASCII letters, digits, space, `.`, `+`, `-`; control
+bytes remain rejected and names stay bounded to 61 characters. The same name
+grammar applies to `0c` PostScript and non-JSON `12` style strings.
+`3:21893` stores family 苹方-简, size 14, line height 22, `06 01 0b 01`,
+`0c PingFangSC-常规体`, `0f EMPTYHASHFFFFFFF`, and JSON fontStyle 常规体.
+Previously the family rejection discarded the entire entry: the 22-high input
+placeholder guessed size 18 instead of reading 14. English PingFang families
+normalize verified localized weights to English; localized families retain
+localized names, matching ZIP's API spelling.
+
+Font field **`07 01` means PERCENT line height**, taking precedence over `06 01`.
+It does not scale with instance scale. Cross-table against referenced 09008
+entries: 26 records at 100% and 6 at 150% carry this flag; two genuine 100 px
+records do not. Examples: `3:70223` = size 24, lineHeight 100, `06 01 07 01`;
+`3:70406` = size 14, lineHeight 150, same flags. Pixel entry `3:21893` has no
+`07 01`. Previously 07 was ignored. `mgLineHeightFromStyleEntry` is shared by
+node properties, mixed runs and emitted text styles so a later style binding
+cannot restore the wrong unit. Absent/negative height remains AUTO; computed
+entries without the explicit pixel flag retain the existing AUTO rule when
+not marked PERCENT.
+
+09008 deep diff 518 → 367, font differences 40 → 20; no new diff rows.
+The available 汇总 pair retains all previous diff rows exactly (deep 1323).
+
+09008 also has a newer **painted-mask trailer combination `2f 01 36 01`**:
+button paths `3:71805` / `3:71503` draw blue in the MasterGo image baseline,
+carry both fields and omit `1e`. The four other mask records carry neither and
+remain shape-only. Decode the pair as an alternative to `1e 01`; standalone
+semantics of 2f and 36 are not claimed. `37 03` occurs on all six and cannot
+distinguish them. Only these two record-level `maskRendersFill` values change
+false→true; all mask flags in the available 汇总 fixture remain unchanged.
+This record-level correction cannot appear in deep props counts. Verify on
+canvas that the two blue login buttons render, not merely that fills exist.

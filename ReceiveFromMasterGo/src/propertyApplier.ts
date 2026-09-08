@@ -1,5 +1,6 @@
 import { applyUniversalProperties } from "./appliers/universal";
 import { applyTextProperties } from "./appliers/text";
+import { getFixedMixedTextLines } from "./appliers/multilineText";
 import { applyConnectorProperties } from "./appliers/connector";
 import { applyVectorNetwork } from "./appliers/vector";
 import { normalizeMasterGoStrokeCapForFigma } from "../../shared/connectorUtils";
@@ -9,6 +10,27 @@ export async function applyProperties(node: any, data: any) {
     if (!node || !data) return;
 
     await applyUniversalProperties(node, data);
+
+    const fixedLines = node.type === "FRAME" ? getFixedMixedTextLines(data) : null;
+    if (fixedLines) {
+        const fills = node.fills;
+        const strokes = node.strokes;
+        node.fills = [];
+        node.strokes = [];
+        node.clipsContent = false;
+        for (let index = 0; index < fixedLines.length; index++) {
+            const line = figma.createText();
+            node.appendChild(line);
+            line.name = fixedLines[index].characters;
+            line.fills = fills;
+            line.strokes = strokes;
+            line.strokeWeight = data.geometry?.strokeWeight ?? 0;
+            await applyTextProperties(line, { ...data, ...fixedLines[index], textAutoResize: "NONE" });
+            line.resize(data.layout.width, data.lineHeight.value);
+            line.x = 0;
+            line.y = index * data.lineHeight.value;
+        }
+    }
 
     if (node.type === "VECTOR" && data.vectorNetwork) {
         await applyVectorNetwork(node as VectorNode, data.vectorNetwork, data);

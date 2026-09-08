@@ -1765,3 +1765,58 @@ A/B 对本轮开始时的解码器（包含先前未提交修复）：汇总 183
 `5:22129`「自由抽屉（透明度修复）」、容器 `5:22130`、覆盖层 `5:22143`。
 Figma API 确认白色填充 opacity=0.5；渲染截图中 12 个色块重新可见。
 原页保留。两端构建通过；该解码修复需重导入，刷新字体不会应用它。
+
+
+## 2026-09-08 · 09008 外部库整集误入
+
+Figma 真实树先确认：原 MG 页有 45 个根、5,126 个 COMPONENT、24 个
+COMPONENT_SET；ZIP 页只有 6 个框架。compare 给出 Missing=0、Extra=22,891，
+deep props=518。不是缺层，也不是先猜新 tag 的问题。
+
+在初始 pageList 前插入本地只读探针，发现 Button 3:23799 等库副本已经带着
+排序码进入 roots。此前“有排序码就是画布组件”的假设不适用于带 libraryKey
+且 parent 只指向页面 owner 的外部副本；它们原本就会在导入收尾被删除。
+另一个放大路径是依赖收集将单变体提升成整套 COMPONENT_SET，并递归所有
+无关兄弟的依赖。分别修复两处入口，保留普通画布组件和实际引用的嵌套母版。
+
+修复后 777 条，保留 756 条画布和 5 棵 / 21 条临时母版。756 条原 props
+和 mainComponentId 逐条不变，所有非 Extra 比较结果逐条不变（added=0）。
+旧汇总配对 zip 同样无新增差异；相对 detached HEAD，完整/精简两路径只去掉
+199 条临时母版树记录，画布 props 不变。未读取“待处理 可忽视”样本；其他
+历史 fixture 当前不在目录，未将历史数字冒充本轮验证。
+
+两端构建通过。接收端初次因本地未安装已声明的 heic-to 失败，npm install
+补齐后正常，依赖清单/锁文件无改动。49 测试 47 通过，两项旧失败在修改前
+48 测试中同样存在：shallow visibility mask、container meta absent padding。
+崩溃未取得旧版运行日志，不能将内存耗尽写成已证实的异常根因。
+
+
+实际验证：新构建插件读取777层并完成756层导入；新页5:12命名
+「页面 1_mg_修复09008」，六个框架、23个实例、零组件/组件集。旧MG页只删除
+已确认的39个临时母版根，保留原六个框架，清理后组件计数为0。UI另外报告
+3缺图和57缺字体，作为未解决残差保留，不能混进本次组件范围结论。
+
+## 2026-09-08 · 09008 native MG follow-through
+
+The ZIP visual fixes alone did not close the MG task. Reading the actual slim
+MG output confirmed welcome text reaches the shared editable-line importer,
+but ordinary input labels still guessed 18 instead of 14. Record `3:71781`
+references font style `3:21893`: its bytes contain a complete localized entry.
+The family was read as Latin-1 and rejected by an ASCII-only regex. Decode
+that bounded field as UTF-8 and accept CJK names for 03/0c/12. Preserve English
+PingFang weight spelling to avoid changing the older 汇总 fixture.
+
+A known-answer cross-table separated 100/150 PERCENT from actual 100 px:
+all 32 percentage records carry font tag `07 01`, while pixel controls do not.
+Do not infer units from magnitude or from 06 alone. Share the unit helper with
+mixed segments and style emission. Full and plugin slim paths use the same
+decoder; WebP conversion and font matching remain shared downstream.
+Compared with the previous turn: 09008 removes exactly 151 deep mismatch rows
+and 20 font rows, adds none; 汇总's complete diff sets are unchanged.
+
+The final MG/image screenshots exposed two missing blue button backgrounds.
+Their VECTOR masks existed with the correct blue fills, but the emitted
+`maskRendersFill:false` suppressed the importer twins. Both button paths have
+`2f 01 36 01` instead of legacy `1e 01`; the four shape-only masks do not.
+Recognize this paired newer spelling only, leaving isolated flags and existing
+shape-only masks unchanged. All available 汇总 mask flags are unchanged.

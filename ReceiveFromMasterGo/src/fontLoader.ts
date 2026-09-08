@@ -94,7 +94,14 @@ export function resolveAvailableFontName(requested: FontName): FontName | null {
         const familyScore = getNormalizedFamilyMatchScore(requestedFamily, entry.family);
         if (familyScore <= 0) continue;
 
-        const styleScore = getNormalizedStyleMatchScore(requestedStyle, entry.style);
+        // Some exported fonts put the full face name in both fields (e.g.
+        // "PingFang SC Regular" / "Pingfang sc regular"). Only strip the
+        // installed family when both requested fields agree exactly.
+        const styleForMatch = (requestedStyle === requestedFamily ||
+            (requestedFamily === entry.family && requestedStyle === entry.family + entry.style)) &&
+            requestedStyle.indexOf(entry.family) === 0
+            ? requestedStyle.slice(entry.family.length) : requestedStyle;
+        const styleScore = getNormalizedStyleMatchScore(styleForMatch, entry.style);
         if (styleScore <= 0) continue;
 
         const score = familyScore + styleScore;
@@ -136,13 +143,30 @@ export function getFontStyleMatchScore(requestedStyle: string, availableStyle: s
 }
 
 export function normalizeFontFamilyForMatch(value: string): string {
-    return String(value || "")
+    const normalized = String(value || "")
         .toLowerCase()
         .replace(/[\s_-]+/g, "")
-        .replace(/[^a-z0-9]/g, "");
+        .replace(/[^a-z0-9\u3400-\u9fff]/g, "");
+    return FONT_FAMILY_ALIASES[normalized] || normalized;
 }
 
+// Verified against the English/zh-CN name records in Apple's PingFang.ttc.
+// Preserve unknown CJK names above: deleting them must not alias unrelated
+// families or turn every Chinese-only name into an empty match key.
+const FONT_FAMILY_ALIASES: { [family: string]: string } = {
+    "苹方简": "pingfangsc",
+    "苹方繁": "pingfangtc",
+    "苹方港": "pingfanghk",
+    "苹方澳": "pingfangmo"
+};
+
 const FONT_STYLE_ALIASES: { [style: string]: string } = {
+    "常规体": "regular",
+    "中黑体": "medium",
+    "中粗体": "semibold",
+    "细体": "light",
+    "纤细体": "thin",
+    "极细体": "extralight",
     normal: "regular",
     book: "regular",
     roman: "regular",
@@ -171,7 +195,7 @@ export function normalizeFontStyleForMatch(value: string): string {
     let normalized = String(value || "")
         .toLowerCase()
         .replace(/[\s_-]+/g, "")
-        .replace(/[^a-z0-9]/g, "");
+        .replace(/[^a-z0-9\u3400-\u9fff]/g, "");
 
     // MasterGo may report a GB18030 charset-edition style ("55 Regular L3")
     // while the installed face ships without the marker ("55 Regular"), or

@@ -2,6 +2,7 @@ import { state } from "./state";
 import { getReceiveCreateType } from "./layerRules";
 import { safeSet, isSceneNode, yieldToEventLoop } from "../../shared/utils";
 import { applyVectorNetwork } from "./appliers/vector";
+import { getFixedMixedTextLines } from "./appliers/multilineText";
 import { createConnectorVectorNetworkFromData } from "./appliers/connector";
 
 const POSTPROCESS_BATCH_SIZE = 500;
@@ -198,7 +199,7 @@ export async function createNodeFromData(data: any): Promise<SceneNode | null> {
                 safeSet(polygon, "pointCount", data.pointCount || 3);
                 break;
             case "TEXT":
-                node = figma.createText();
+                node = getFixedMixedTextLines(data) ? figma.createFrame() : figma.createText();
                 break;
             case "SECTION":
                 node = figma.createSection();

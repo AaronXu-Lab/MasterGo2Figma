@@ -40,6 +40,26 @@ test('HEIF conversion stays local to the asset and ordinary bytes pass through',
   assert.equal(await prepareImageAssetBytes(heif,'next.heic',async()=>png),png);
 });
 
+test('WebP is recognized inside legacy .bin assets and failed conversion does not stop later assets', async () => {
+  const webp = Uint8Array.from(Buffer.from('524946460400000057454250', 'hex'));
+  const png = Uint8Array.from([137, 80, 78, 71]);
+  const neverHeif = () => { throw Error('WebP is not HEIF'); };
+  assert.equal(await prepareImageAssetBytes(webp, 'old.bin', neverHeif, async bytes => {
+    assert.equal(bytes, webp);
+    return png;
+  }), png);
+  assert.equal(await prepareImageAssetBytes(webp, 'bad.bin', neverHeif, async () => { throw Error('broken WebP'); }), webp);
+  assert.equal(await prepareImageAssetBytes(webp, 'next.webp', neverHeif, async () => png), png);
+  const wav = Uint8Array.from(Buffer.from('524946460400000057415645', 'hex'));
+  assert.equal(await prepareImageAssetBytes(wav, 'audio.bin', neverHeif, neverHeif), wav);
+});
+
+test('WebP export extension uses the RIFF signature rather than RIFG', () => {
+  const { detectImageExtension } = compile('SendToFigma/src/imageExporter.ts');
+  assert.equal(detectImageExtension(Uint8Array.from(Buffer.from('524946460400000057454250', 'hex'))), 'webp');
+  assert.equal(detectImageExtension(Uint8Array.from(Buffer.from('524946470400000057454250', 'hex'))), 'bin');
+});
+
 test('incomplete asset chunks are recorded and released without poisoning the next asset',()=>{
   // Compile the actual stream completion handler with a small host mock.
   const fs = require('node:fs');

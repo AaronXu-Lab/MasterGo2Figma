@@ -1383,7 +1383,8 @@ function paintFilledMaskTwins(session: ImportSession): number {
     if ("children" in node) for (const child of [...(node as ChildrenMixin).children]) visit(child);
     const nodeAny = node as any;
     if (nodeAny.isMask !== true) return;
-    // Native .mg records carry the render bit explicitly (trailer `1e 01`);
+    // Native .mg records carry the render bit (legacy `1e 01`, or the
+    // newer paired `2f 01 36 01` spelling decoded into maskRendersFill);
     // a mask without it is shape-only — MasterGo never draws its fill (临时测试
     // 橙卡: the twin painted a #FFB283 base the design doesn't have).
     if (session.maskFillSuppressedNodeIds[node.id]) return;

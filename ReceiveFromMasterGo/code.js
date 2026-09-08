@@ -332,7 +332,8 @@ ${style}`;
     for (const entry of normalizedFontEntries) {
       const familyScore = getNormalizedFamilyMatchScore(requestedFamily, entry.family);
       if (familyScore <= 0) continue;
-      const styleScore = getNormalizedStyleMatchScore(requestedStyle, entry.style);
+      const styleForMatch = (requestedStyle === requestedFamily || requestedFamily === entry.family && requestedStyle === entry.family + entry.style) && requestedStyle.indexOf(entry.family) === 0 ? requestedStyle.slice(entry.family.length) : requestedStyle;
+      const styleScore = getNormalizedStyleMatchScore(styleForMatch, entry.style);
       if (styleScore <= 0) continue;
       const score = familyScore + styleScore;
       if (!bestMatch || score > bestMatch.score) {
@@ -355,9 +356,22 @@ ${style}`;
     return 0;
   }
   function normalizeFontFamilyForMatch(value) {
-    return String(value || "").toLowerCase().replace(/[\s_-]+/g, "").replace(/[^a-z0-9]/g, "");
+    const normalized = String(value || "").toLowerCase().replace(/[\s_-]+/g, "").replace(/[^a-z0-9\u3400-\u9fff]/g, "");
+    return FONT_FAMILY_ALIASES[normalized] || normalized;
   }
+  var FONT_FAMILY_ALIASES = {
+    "\u82F9\u65B9\u7B80": "pingfangsc",
+    "\u82F9\u65B9\u7E41": "pingfangtc",
+    "\u82F9\u65B9\u6E2F": "pingfanghk",
+    "\u82F9\u65B9\u6FB3": "pingfangmo"
+  };
   var FONT_STYLE_ALIASES = {
+    "\u5E38\u89C4\u4F53": "regular",
+    "\u4E2D\u9ED1\u4F53": "medium",
+    "\u4E2D\u7C97\u4F53": "semibold",
+    "\u7EC6\u4F53": "light",
+    "\u7EA4\u7EC6\u4F53": "thin",
+    "\u6781\u7EC6\u4F53": "extralight",
     normal: "regular",
     book: "regular",
     roman: "regular",
@@ -382,7 +396,7 @@ ${style}`;
     100: "thin"
   };
   function normalizeFontStyleForMatch(value) {
-    let normalized = String(value || "").toLowerCase().replace(/[\s_-]+/g, "").replace(/[^a-z0-9]/g, "");
+    let normalized = String(value || "").toLowerCase().replace(/[\s_-]+/g, "").replace(/[^a-z0-9\u3400-\u9fff]/g, "");
     const withoutCharsetMarker = normalized.replace(/l\d+$/, "");
     if (withoutCharsetMarker) normalized = withoutCharsetMarker;
     return FONT_STYLE_ALIASES[normalized] || normalized;
@@ -1307,6 +1321,39 @@ ${style}`;
     return result;
   }
 
+  // src/appliers/multilineText.ts
+  function getFixedMixedTextLines(data) {
+    var _a, _b, _c, _d;
+    const text = data == null ? void 0 : data.characters;
+    const lineHeight = data == null ? void 0 : data.lineHeight;
+    const segments = data == null ? void 0 : data.styledTextSegments;
+    if (typeof text !== "string" || !text.includes("\n") || text.includes("\r") || data.textAutoResize !== "WIDTH_AND_HEIGHT" || (lineHeight == null ? void 0 : lineHeight.unit) !== "PIXELS" || !(lineHeight.value > 0) || !Array.isArray(segments) || ((_a = data.blend) == null ? void 0 : _a.isMask) || !(((_b = data.layout) == null ? void 0 : _b.width) > 0) || (data.paragraphSpacing || 0) !== 0 || (data.paragraphIndent || 0) !== 0) return null;
+    const lines = text.split("\n");
+    if (lines.some((line) => !line) || Math.abs(((_c = data.layout) == null ? void 0 : _c.height) - lines.length * lineHeight.value) > 0.015 || !Number.isFinite((_d = data.layout) == null ? void 0 : _d.height)) return null;
+    if (segments.some((segment) => segment.lineHeight && (segment.lineHeight.unit !== "PIXELS" || segment.lineHeight.value !== lineHeight.value))) return null;
+    let offset = 0;
+    const result = lines.map((characters) => {
+      const start = offset;
+      offset += characters.length + 1;
+      const runs = segments.filter((s) => s.end > start && s.start < offset - 1).map((s) => __spreadProps(__spreadValues({}, s), { start: Math.max(0, s.start - start), end: Math.min(characters.length, s.end - start) }));
+      return { characters, styledTextSegments: runs };
+    });
+    const sizes = result.map((line) => {
+      let covered = 0;
+      for (const run of line.styledTextSegments) {
+        if (run.start !== covered) return null;
+        covered = run.end;
+      }
+      if (covered !== line.characters.length) return null;
+      const sizes2 = new Set(line.styledTextSegments.map((s) => {
+        var _a2;
+        return (_a2 = s.fontSize) != null ? _a2 : data.fontSize;
+      }));
+      return sizes2.size === 1 ? [...sizes2][0] : null;
+    });
+    return sizes.indexOf(null) >= 0 || new Set(sizes).size < 2 ? null : result;
+  }
+
   // src/nodeCreator.ts
   var POSTPROCESS_BATCH_SIZE2 = 500;
   var POSTPROCESS_YIELD_INTERVAL_MS2 = 50;
@@ -1462,7 +1509,7 @@ ${style}`;
             safeSet(polygon, "pointCount", data.pointCount || 3);
             break;
           case "TEXT":
-            node = figma.createText();
+            node = getFixedMixedTextLines(data) ? figma.createFrame() : figma.createText();
             break;
           case "SECTION":
             node = figma.createSection();
@@ -2006,8 +2053,29 @@ ${style}`;
   // src/propertyApplier.ts
   function applyProperties(node, data) {
     return __async(this, null, function* () {
+      var _a, _b;
       if (!node || !data) return;
       yield applyUniversalProperties(node, data);
+      const fixedLines = node.type === "FRAME" ? getFixedMixedTextLines(data) : null;
+      if (fixedLines) {
+        const fills = node.fills;
+        const strokes = node.strokes;
+        node.fills = [];
+        node.strokes = [];
+        node.clipsContent = false;
+        for (let index = 0; index < fixedLines.length; index++) {
+          const line = figma.createText();
+          node.appendChild(line);
+          line.name = fixedLines[index].characters;
+          line.fills = fills;
+          line.strokes = strokes;
+          line.strokeWeight = (_b = (_a = data.geometry) == null ? void 0 : _a.strokeWeight) != null ? _b : 0;
+          yield applyTextProperties(line, __spreadProps(__spreadValues(__spreadValues({}, data), fixedLines[index]), { textAutoResize: "NONE" }));
+          line.resize(data.layout.width, data.lineHeight.value);
+          line.x = 0;
+          line.y = index * data.lineHeight.value;
+        }
+      }
       if (node.type === "VECTOR" && data.vectorNetwork) {
         yield applyVectorNetwork(node, data.vectorNetwork, data);
         reapplyVectorStrokeGeometry(node, data);

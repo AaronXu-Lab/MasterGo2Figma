@@ -261,6 +261,15 @@ test("instance-descendant slimming keeps every field the override matcher reads"
   assert.equal(slim.geometry.strokeWeight, undefined);
 });
 
+test("page roots exclude sort-coded synced library copies but preserve canvas components", () => {
+  const master = { type: "FRAME", parent: "page", code: "a1", containerMeta: { subtype: "COMPONENT_SET", libraryKey: "library+node" } };
+  assert.equal(__test.isPageRootNode(master, {}), false);
+  assert.equal(__test.isPageRootNode({ ...master, containerMeta: { subtype: "COMPONENT_SET" } }, {}), true);
+  assert.equal(__test.isPageRootNode({ ...master, code: "", containerMeta: { subtype: "COMPONENT" } }, {}), false);
+  assert.equal(__test.isPageRootNode({ ...master, parent: "frame" }, { frame: { type: "FRAME" } }), true);
+  assert.equal(__test.isPageRootNode({ type: "FRAME", containerMeta: { subtype: "FRAME" } }, {}), true);
+});
+
 test("off-canvas component dependencies include nested masters without unrelated library content", () => {
   const node = (id, subtype, templateRef, parent) => ({ id, type: "FRAME", containerMeta: { subtype }, templateRef, parent });
   const nodes = {
@@ -281,7 +290,7 @@ test("off-canvas component dependencies include nested masters without unrelated
   assert.deepEqual(canvasIds, { canvas: true, instance: true });
 });
 
-test("component dependencies retain variant sets and exclude real canvas masters and unresolved refs", () => {
+test("component dependencies retain only referenced variants and exclude canvas masters and unresolved refs", () => {
   const nodes = {
     a: { id: "a", type: "FRAME", templateRef: "variant" },
     b: { id: "b", type: "FRAME", templateRef: "local" },
@@ -290,7 +299,16 @@ test("component dependencies retain variant sets and exclude real canvas masters
     set: { id: "set", type: "FRAME", containerMeta: { subtype: "COMPONENT_SET" } },
     local: { id: "local", type: "FRAME", containerMeta: { subtype: "COMPONENT" } }
   };
-  assert.deepEqual(__test.collectPageComponentDependencies(["a", "b", "c"], nodes, { set: ["variant"] }, { local: true }), ["set"]);
+  // An unused sibling references another library: neither it nor that
+  // transitive dependency should be visited when only `variant` is used.
+  nodes.unused = { id: "unused", type: "FRAME", parent: "set", templateRef: "other", containerMeta: { subtype: "COMPONENT" } };
+  nodes.other = { id: "other", type: "FRAME", containerMeta: { subtype: "COMPONENT" } };
+  const children = { set: ["variant", "unused"] };
+  assert.deepEqual(__test.collectPageComponentDependencies(["a", "b", "c"], nodes, children, { local: true }), ["variant"]);
+  // Genuine canvas sets keep all children, and those children still discover
+  // their own dependencies. Discovery must never prune the source tree.
+  assert.deepEqual(__test.collectPageComponentDependencies(["set"], nodes, children, { set: true, variant: true, unused: true }), ["other"]);
+  assert.deepEqual(children.set, ["variant", "unused"]);
 });
 
 test("materialized instanceRef records default visible without resurrecting ordinary hidden stubs", () => {
@@ -406,4 +424,37 @@ test("native connector preserves local endpoints, manual elbow and arrow", () =>
   assert.deepEqual(props.vectorNetwork.vertices.map(v=>[v.x,v.y]),[[71,0],[71,70],[0,70],[0,106]]);
   assert.equal(props.vectorNetwork.vertices[3].strokeCap,'ARROW_LINES');
   assert.equal(props.vectorNetwork.vertices[1].cornerRadius,8);
+});
+
+test('UTF-8 font entries preserve localized names, point size and pixel line height', () => {
+  const bytes = Uint8Array.from(Buffer.concat([
+    Buffer.from('\x019:1\0\x05\x03\x03苹方-简\0', 'utf8'),
+    Buffer.from([0x04,0x82,0,0,0xc0,0x05,0x83,0,0,0x60,0x06,1,0x0b,1]),
+    Buffer.from('\x0cPingFangSC-常规体\0\x0e\0\x0fEMPTYHASHFFFFFFF\0\x12{"fontStyle":"常规体","opsz":"auto"}\0\0', 'utf8')
+  ]));
+  const entry = __test.scanFontStyles(bytes, Buffer.from(bytes).toString('latin1'))['9:1'];
+  assert.equal(entry.family, '苹方-简');
+  assert.equal(entry.styleName, '常规体');
+  assert.equal(entry.fontSize, 14);
+  assert.deepEqual(__test.lineHeightFromStyleEntry(entry, 1, false), {value:22,unit:'PIXELS'});
+});
+
+test('font entry percent flag overrides pixel flag and does not scale percentages', () => {
+  const bytes = Uint8Array.from(Buffer.concat([
+    Buffer.from('\x019:2\0\x05\x03\x03PingFang SC\0', 'utf8'),
+    Buffer.from([0x05,0x85,0,0,0x90,0x06,1,0x07,1,0])
+  ]));
+  const entry = __test.scanFontStyles(bytes, Buffer.from(bytes).toString('latin1'))['9:2'];
+  assert.deepEqual(__test.lineHeightFromStyleEntry(entry, 0.5, false), {value:100,unit:'PERCENT'});
+  assert.deepEqual(__test.lineHeightFromStyleEntry({...entry,lineHeightPercent:false}, 0.5, false), {value:50,unit:'PIXELS'});
+  assert.deepEqual(__test.lineHeightFromStyleEntry({lineHeight:22,lineHeightPx:false}, 1, true), {unit:'AUTO'});
+  assert.deepEqual(__test.lineHeightFromStyleEntry({lineHeight:-1}, 1, false), {unit:'AUTO'});
+});
+
+test('painted masks accept the paired newer flags without enabling shape-only masks', () => {
+  assert.equal(__test.maskRendersFill({t1e:1}), true);
+  assert.equal(__test.maskRendersFill({t2f:1,t36:1}), true);
+  for (const trailer of [null,{}, {t2f:1}, {t36:1}, {t2f:0,t36:1}]) {
+    assert.equal(__test.maskRendersFill(trailer), false);
+  }
 });
