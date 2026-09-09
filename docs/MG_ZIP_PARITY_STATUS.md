@@ -482,3 +482,42 @@ Deep 518；汇总 Missing 0 / Extra 504 / Deep 1323，与上一轮相同。
 仍有最大 2/255 的色差，未声称全图像素一致；尚余 367 条 props 残差与缺失字体。
 依赖、字节解码、蒙版及文字分行修复需重导入；字体匹配可单独用“刷新字体”。
 本测试文件已由代理完成真实 MG 重导入，无需用户再次操作。
+
+
+## 2026-09-09 · 0909 毛玻璃图标
+
+Fixture: `测试集/0909/测试文件 0909.mg` + `mastergo2figma-partial-pages-2026-09-09T02-59-48-819Z.zip`.
+
+| Check | Before | After |
+|---|---:|---:|
+| Source records | 41 | 41 |
+| Missing / extra | 0 / 0 | 0 / 0 |
+| Effect differences | 4 | 0 |
+| Deep prop differences | 4 | 0 |
+| All other comparator categories | 0 | 0 |
+| ZIP erroneous translucent mask twins | 4 | 0 |
+
+Native effect scalar 16 is now consumed; ZIP fallback avoids painting black alpha
+coverage masks under background blur. Current Figma pages `32:2` MG and `32:55` ZIP
+were corrected in place; reference `32:121` remains unchanged. Four image/ZIP/MG
+comparisons verified; small edge and blur raster differences remain (MG mean per-channel
+0.36–1.58/255; max 31/255). Full/slim records identical. Existing page corrections need
+no reimport; other existing imports require reimport for these code changes.
+
+Available main regression 汇总: HEAD/current diff sets identical, deep 1323,
+geometry 182, transform 108, font 90, paint 7, effect 0, missing 0, extra 504.
+09008 fixture is no longer present, so its historical numbers were not re-run.
+Both builds pass, 57/59 tests pass; the two baseline failures remain unchanged.
+
+
+### 0909 follow-up: white-stroked alpha masks
+User reimport page 37:361 exposed an incomplete importer guard: all four source
+coverage masks have visible white strokes (~1.33px). Earlier inspected pages had
+no strokes, so the no-stroke test falsely appeared sufficient. The fallback now
+accepts white SOLID strokes as coverage; colored/black/gradient strokes remain
+excluded, and explicit native flags still win. Added the actual white-stroke
+case to the regression test. Corrected the four erroneous twins on page37:361
+in place, retaining original mask strokes. Existing ZIP needs no re-export.
+Both builds pass; 57/59 tests pass (same two existing failures). Native UI import
+verification was attempted but blocked by CUA noWindowsAvailable on the file
+button; do not claim a completed fresh plugin import for this follow-up.

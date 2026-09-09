@@ -1,5 +1,6 @@
 import { ImportLayerRecord, ImportManifest, ImportPageIndex, MissingFontTextRestoreResult } from "../../shared/types";
 import { state } from "./state";
+import { isBackdropCoverageMask } from "./appliers/maskFill";
 import {
   ensureLayerRulesLoaded, hasValidLayerRules, getLayerRuleStatus
 } from "./layerRules";
@@ -65,6 +66,7 @@ type ImportSession = {
   // Node ids of masks whose record says MasterGo does NOT render their own
   // fill (record.maskRendersFill === false) — paintFilledMaskTwins skips them.
   maskFillSuppressedNodeIds: { [nodeId: string]: true };
+  maskFillExplicitNodeIds: { [nodeId: string]: true };
   // library style ref (prefixed .mg style record id) → created Figma style id
   // (native .mg imports ship a styles.json payload; records reference styles
   // via fillStyleRef/strokeStyleRef/effectStyleRef/textStyleRef)
@@ -293,6 +295,7 @@ async function startImportSession(message: any) {
     libraryMasterNodes: [],
     libraryMasterLayerCount: 0,
     maskFillSuppressedNodeIds: {},
+    maskFillExplicitNodeIds: {},
     figmaStyleIdByRef: {}
   };
 
@@ -661,6 +664,10 @@ async function restoreImportPageData(importPage: ImportPageIndex, layers: { [id:
   addImportTiming(session, "restore.deferredRelinkMs", Date.now() - relinkStartedAt);
   collectLibraryMasterNodes(session, layers);
   for (const id in layers) {
+    if (layers[id]?.maskRendersFill === true) {
+      const maskNode = session.restoredNodeById[id];
+      if (maskNode && !maskNode.removed) session.maskFillExplicitNodeIds[maskNode.id] = true;
+    }
     if (layers[id] && layers[id].maskRendersFill === false) {
       const maskNode = session.restoredNodeById[id];
       if (maskNode && !maskNode.removed) session.maskFillSuppressedNodeIds[maskNode.id] = true;
@@ -1392,6 +1399,8 @@ function paintFilledMaskTwins(session: ImportSession): number {
     if (isDefaultMaskFill(nodeAny.fills) && !hasVisiblePaint(nodeAny.strokes)) return;
     const parent = node.parent;
     if (!parent || !("insertChild" in parent)) return;
+    if (!session.maskFillExplicitNodeIds[node.id] &&
+        isBackdropCoverageMask(nodeAny.fills, nodeAny.strokes, (parent as any).effects)) return;
     try {
       const twin = (node as any).clone() as SceneNode;
       (twin as any).isMask = false;

@@ -1155,7 +1155,9 @@
             continue;
           }
           if (t === 0x06) { visible = bytes[p + 1] !== 0; p += 2; continue; }
-          if (t === 0x09 || t === 0x0a || t === 0x0b || t === 0x0c || t === 0x0f) {
+          // 0909 effect field 16 carries a zero-compressed scalar; its
+          // rendering meaning is unknown. Consume it without replacing radius 09.
+          if (t === 0x09 || t === 0x0a || t === 0x0b || t === 0x0c || t === 0x0f || t === 0x16) {
             const r = mgReadZeroFloat(bytes, p + 1);
             if (!isFinite(r.value) || Math.abs(r.value) > 1e5) { ok = false; break; }
             if (t === 0x09) radius = r.value;
@@ -5371,6 +5373,7 @@
       parseFontRuns: mgParseFontRuns,
       scanPaints: mgScanPaints,
       scanFontStyles: mgScanFontStyles,
+      scanEffects: mgScanEffects,
       lineHeightFromStyleEntry: mgLineHeightFromStyleEntry,
       maskRendersFill: mgMaskRendersFill,
       scanStyleDefs: mgScanStyleDefs,

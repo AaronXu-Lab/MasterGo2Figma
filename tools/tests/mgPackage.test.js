@@ -458,3 +458,13 @@ test('painted masks accept the paired newer flags without enabling shape-only ma
     assert.equal(__test.maskRendersFill(trailer), false);
   }
 });
+
+
+test("effect scalar 16 preserves background blur and later fields", () => {
+  const bytes = Buffer.concat([Buffer.from("\x019:1\x00\x029:2\x00\x03a0\x00"),
+    Buffer.from([5,3,9,0x81,0x56,0x55,0x55,0x16,0x86,0xac,0xaa,0x0a,0x18,6,0,0,0])]);
+  const effects = __test.scanEffects(bytes, bytes.toString("latin1"))["9:2"];
+  assert.equal(effects.length, 1);
+  assert.equal(effects[0].type, "BACKGROUND_BLUR");
+  assert.ok(Math.abs(effects[0].radius - 5.33333349) < 1e-6);
+});

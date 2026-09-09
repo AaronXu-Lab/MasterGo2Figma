@@ -1820,3 +1820,45 @@ Their VECTOR masks existed with the correct blue fills, but the emitted
 `2f 01 36 01` instead of legacy `1e 01`; the four shape-only masks do not.
 Recognize this paired newer spelling only, leaving isolated flags and existing
 shape-only masks unchanged. All available 汇总 mask flags are unchanged.
+
+
+## 2026-09-09 · 0909 background blur and alpha-mask twins
+
+Effect record `8:12500` (parent `8:12499`) is shared by four 毛玻璃层 groups.
+Its body contains `05 03 … 09 81 56 55 55 0b 00 0d 01 16 86 ac aa 0a 18 …`.
+Field `09` is the verified 5.33333349 blur radius. Field `16` is a zero-compressed
+scalar of unknown rendering meaning; consume it sequentially without replacing radius.
+The previous unknown-tag rejection discarded the entire effect. All four background
+blurs now decode; 0909 has 41/41 records and zero differences in every comparator category.
+Do not infer a new radius or progressive-blur meaning from this single entry.
+
+ZIP omits native `maskRendersFill`. Its fallback painted four translucent black
+coverage masks as separate non-mask twins, adding a gray veil behind the masked white
+paper. Removing those twins matches the reference's frosted appearance. Importer
+fallback now skips a sole visible translucent black SOLID fill, with no visible strokes,
+when its immediate parent has an enabled positive-radius BACKGROUND_BLUR. Native
+explicit true/false flags remain authoritative; opaque, colored, stroked, and ordinary
+non-blurred masks retain their previous behavior. This is a bounded ZIP heuristic,
+not a general claim that all masks with blur suppress their own paint.
+
+Canvas verification applied the four decoded effects directly to existing MG groups
+and removed four erroneous ZIP twins. Both pages retain six roots; their two image
+nodes are also present on the image page and are not extras. No raster replacement
+was introduced. Four three-way screenshots retain small edge/blur raster differences:
+MG mean channel absolute errors 0.36–1.58/255, maximum 31/255; do not claim pixel identity.
+Full and UI-slim 0909 records are identical. Available 汇总 regression versus HEAD
+has identical diff sets (1323 deep rows, zero added/removed). Both builds pass;
+59 tests: 57 pass, two pre-existing failures (visibility default and container padding).
+
+
+### 0909 follow-up: white-stroked alpha masks
+User reimport page 37:361 exposed an incomplete importer guard: all four source
+coverage masks have visible white strokes (~1.33px). Earlier inspected pages had
+no strokes, so the no-stroke test falsely appeared sufficient. The fallback now
+accepts white SOLID strokes as coverage; colored/black/gradient strokes remain
+excluded, and explicit native flags still win. Added the actual white-stroke
+case to the regression test. Corrected the four erroneous twins on page37:361
+in place, retaining original mask strokes. Existing ZIP needs no re-export.
+Both builds pass; 57/59 tests pass (same two existing failures). Native UI import
+verification was attempted but blocked by CUA noWindowsAvailable on the file
+button; do not claim a completed fresh plugin import for this follow-up.

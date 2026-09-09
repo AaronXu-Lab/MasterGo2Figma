@@ -142,6 +142,19 @@
   };
   var state = new RestorerState();
 
+  // src/appliers/maskFill.ts
+  function isBackdropCoverageMask(fills, strokes, effects) {
+    var _a, _b, _c;
+    if (!Array.isArray(effects) || !effects.some((fx) => fx.type === "BACKGROUND_BLUR" && fx.visible !== false && fx.radius > 0)) return false;
+    const visible = (paints2) => Array.isArray(paints2) ? paints2.filter((p) => p && p.visible !== false && (p.opacity === void 0 || p.opacity > 0)) : [];
+    if (visible(strokes).some((p) => {
+      var _a2, _b2, _c2;
+      return p.type !== "SOLID" || ((_a2 = p.color) == null ? void 0 : _a2.r) !== 1 || ((_b2 = p.color) == null ? void 0 : _b2.g) !== 1 || ((_c2 = p.color) == null ? void 0 : _c2.b) !== 1;
+    })) return false;
+    const paints = visible(fills);
+    return paints.length === 1 && paints[0].type === "SOLID" && paints[0].opacity > 0 && paints[0].opacity < 1 && ((_a = paints[0].color) == null ? void 0 : _a.r) === 0 && ((_b = paints[0].color) == null ? void 0 : _b.g) === 0 && ((_c = paints[0].color) == null ? void 0 : _c.b) === 0;
+  }
+
   // ../shared/layerRulesConfig.ts
   var LAYER_RULES_SCHEMA = "mastergo2figma.layer-conversion-rules.v1";
   var VALID_RECEIVE_CREATE_TYPES = [
@@ -2714,6 +2727,7 @@ ${style}`;
         libraryMasterNodes: [],
         libraryMasterLayerCount: 0,
         maskFillSuppressedNodeIds: {},
+        maskFillExplicitNodeIds: {},
         figmaStyleIdByRef: {}
       };
       figma.ui.postMessage({
@@ -2961,6 +2975,7 @@ ${style}`;
   }
   function restoreImportPageData(importPage, layers, pageIndex = 0) {
     return __async(this, null, function* () {
+      var _a;
       if (!activeImportSession) throw new Error("\u5BFC\u5165\u4F1A\u8BDD\u4E0D\u5B58\u5728\u6216\u5DF2\u91CD\u7F6E");
       const session = activeImportSession;
       const pageName = createRestoredPageName(importPage.name);
@@ -3059,6 +3074,10 @@ ${style}`;
       addImportTiming(session, "restore.deferredRelinkMs", Date.now() - relinkStartedAt);
       collectLibraryMasterNodes(session, layers);
       for (const id in layers) {
+        if (((_a = layers[id]) == null ? void 0 : _a.maskRendersFill) === true) {
+          const maskNode = session.restoredNodeById[id];
+          if (maskNode && !maskNode.removed) session.maskFillExplicitNodeIds[maskNode.id] = true;
+        }
         if (layers[id] && layers[id].maskRendersFill === false) {
           const maskNode = session.restoredNodeById[id];
           if (maskNode && !maskNode.removed) session.maskFillSuppressedNodeIds[maskNode.id] = true;
@@ -3653,6 +3672,7 @@ ${style}`;
       if (isDefaultMaskFill(nodeAny.fills) && !hasVisiblePaint(nodeAny.strokes)) return;
       const parent = node.parent;
       if (!parent || !("insertChild" in parent)) return;
+      if (!session.maskFillExplicitNodeIds[node.id] && isBackdropCoverageMask(nodeAny.fills, nodeAny.strokes, parent.effects)) return;
       try {
         const twin = node.clone();
         twin.isMask = false;
