@@ -468,3 +468,82 @@ test("effect scalar 16 preserves background blur and later fields", () => {
   assert.equal(effects[0].type, "BACKGROUND_BLUR");
   assert.ok(Math.abs(effects[0].radius - 5.33333349) < 1e-6);
 });
+
+test("editor component metadata preserves external identity and following layout", () => {
+  const bytes = Buffer.concat([
+    Buffer.from([5,1,6,0,7,1]), Buffer.from('Description\0\x02\0\x031234+5:6\0'),
+    Buffer.from([4,0x80,0x80,1,5,1,6,0,8,0,0,8,1,9,0x82,0,0,0x40,0x0a,1,0,2,0,3,0,4,0,0,0])
+  ]);
+  const meta = __test.parseContainerMeta(bytes, 0);
+  assert.equal(meta.subtype, 'COMPONENT');
+  assert.equal(meta.libraryKey, '1234+5:6');
+  assert.equal(meta.layoutMode, 'HORIZONTAL');
+  assert.equal(meta.itemSpacing, 10);
+  assert.deepEqual(meta.paddings, {top:0,right:0,bottom:0,left:0});
+  assert.equal(__test.isPageRootNode({type:'FRAME',code:'a0',parent:'page',containerMeta:meta}, {}), false);
+});
+
+test("explicit AUTO sizing enums do not swallow subsequent fields or inherit FIXED", () => {
+  const bytes = Buffer.from([0x1d,1,0x20,0x7f,0,0,0,0x21,1,0x22,0,0x26,0x7f,0,0,0,0]);
+  const trailer = __test.parseTrailer(bytes, bytes.toString('latin1'), 0, bytes.length, 0);
+  assert.equal(trailer.has21, false);
+  assert.equal(trailer.explicit21, true);
+  assert.equal(trailer.has22, true);
+  assert.equal(trailer.layoutGrow, 1);
+  assert.equal(trailer.scaleFactor, 1);
+});
+
+test("sparse instance layout inherits omitted fields but keeps explicit zero", () => {
+  const template = {itemSpacing:11,paddings:{top:10,right:10,bottom:10,left:0}};
+  const sparse = __test.fillContainerMeta({subtype:'INSTANCE'}, template);
+  assert.equal(sparse.itemSpacing, 11);
+  assert.deepEqual(sparse.paddings, template.paddings);
+  const explicit = __test.fillContainerMeta({itemSpacing:0,paddings:{top:0,right:0,bottom:0,left:0}}, template);
+  assert.equal(explicit.itemSpacing, 0);
+  assert.equal(explicit.paddings.right, 0);
+});
+
+test("inactive image scalar 0a retains solid paint and rejects unknown payload", () => {
+  const head = Buffer.from('\x019:1\0\x029:2\0\x03a0\0');
+  const body = Buffer.from([8,0x7f,0,0,0,0x7f,0,0,0,0,0,0x0b,0x0a,0,0,0]);
+  const bytes = Buffer.concat([head,body]);
+  assert.equal(__test.scanPaints(bytes,bytes.toString('latin1'))['9:2'][0].color.r, 1);
+  body[body.length-4] = 0x7e;
+  const unknown = Buffer.concat([head,body]);
+  assert.equal(__test.scanPaints(unknown,unknown.toString('latin1'))['9:2'], undefined);
+});
+
+test("control point index survives an inactive vertex index minus one", () => {
+  const minusOne = [255,255,255,255,15];
+  const bytes = Buffer.from([
+    2,1,1,4,0,0,1,1,2,0,0, // segment start 0, controls 0/1, end 1
+    3,0,
+    4,2, // controls deliberately stored in reverse index order
+    1,0x80,0,0,0,3,1,5,...minusOne,0, // control 1 at (2,0)
+    1,0x7f,0,0,0,3,0,5,...minusOne,0, // control 0 at (1,0)
+    5,2,5,0,0,1,0x80,0,0,0x80,5,1,0,6,0 // vertices (0,0),(3,0)
+  ]);
+  const network = __test.decodeGeometryBlob(bytes,0);
+  assert.deepEqual(network.segments[0], {start:0,end:1,tangentStart:{x:1,y:0},tangentEnd:{x:-1,y:0}});
+});
+
+test("editor effect flags retain shadow color, radius and offsets", () => {
+  const bytes = Buffer.concat([Buffer.from('\x019:1\0\x029:2\0\x03a0\0'),
+    Buffer.from([4,0,5,1,6,1,7,0,8,0x7e,0,0,0,0,0,0,9,0x82,0,0,0,0x0a,0,0x0b,0x81,0,0,0,0x0d,1,0x0e,1,0x0f,0,0x10,0,0])]);
+  const effect = __test.scanEffects(bytes,bytes.toString('latin1'))['9:2'][0];
+  assert.equal(effect.type,'DROP_SHADOW');
+  assert.equal(effect.radius,8);
+  assert.deepEqual(effect.offset,{x:0,y:4});
+  assert.equal(effect.color.a,0.5);
+});
+
+test("slim instance text retains typography and mixed runs without vector payload", () => {
+  const props = {type:'TEXT',characters:'Value',fontSize:14,fontName:{family:'Inter',style:'Regular'},
+    lineHeight:{unit:'PIXELS',value:20},styledTextSegments:[{start:0,end:5,fontSize:18}],vectorNetwork:{}};
+  const slim = __test.slimInstanceDescendantProps(props);
+  assert.equal(slim.fontSize,14);
+  assert.deepEqual(slim.fontName,props.fontName);
+  assert.deepEqual(slim.lineHeight,props.lineHeight);
+  assert.deepEqual(slim.styledTextSegments,props.styledTextSegments);
+  assert.equal(slim.vectorNetwork,undefined);
+});

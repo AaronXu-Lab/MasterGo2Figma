@@ -4,7 +4,7 @@ import { isBackdropCoverageMask } from "./appliers/maskFill";
 import {
   ensureLayerRulesLoaded, hasValidLayerRules, getLayerRuleStatus
 } from "./layerRules";
-import { restoreMissingFontTextLayers } from "./appliers/text";
+import { restoreMissingFontTextLayers, applyInstanceTextFormatting } from "./appliers/text";
 import {
   applyDeferredConnectorRestores,
   createConnectorVectorNetworkFromData
@@ -1516,6 +1516,12 @@ async function applyInstanceChildOverrides(
           if (want !== null && want !== have) safeSetStrokes(node as any, geometry.strokes);
         }
       } catch (error) { /* not overridable */ }
+    }
+    // Run fills must land after the whole-node paint override above.
+    if (node.type === "TEXT") {
+      try {
+        await applyInstanceTextFormatting(node, props);
+      } catch (error) { /* font unavailable or locked — preserve master formatting */ }
     }
     // Auto-layout spacing/padding is overridable on instance sublayers and
     // MasterGo stores the instance's own value on the child record (0806 tab

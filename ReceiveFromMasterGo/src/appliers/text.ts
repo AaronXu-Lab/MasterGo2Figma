@@ -104,6 +104,36 @@ export async function applyStyledTextSegments(node: TextNode, segments: any[]) {
     }
 }
 
+// Instance descendants already contain the master's text. Replay only supplied
+// formatting; geometry and auto-resize remain under the instance layout path.
+export async function applyInstanceTextFormatting(node: TextNode, data: any): Promise<void> {
+    for (const segment of node.getStyledTextSegments(["fontName"])) {
+        await loadFontCached(segment.fontName);
+    }
+    if (data.fontName) {
+        await ensureAvailableFontsLoaded();
+        const resolved = resolveAvailableFontName(data.fontName);
+        if (resolved) {
+            await loadFontCached(resolved);
+            if (node.fontName === figma.mixed || node.fontName.family !== resolved.family || node.fontName.style !== resolved.style) {
+                node.fontName = resolved;
+            }
+        }
+    }
+    if (Number.isFinite(data.fontSize) && data.fontSize > 0 && node.fontSize !== data.fontSize) {
+        node.fontSize = data.fontSize;
+    }
+    for (const key of ["lineHeight", "letterSpacing", "textCase", "textDecoration",
+        "textAlignHorizontal", "textAlignVertical", "paragraphIndent", "paragraphSpacing"] as const) {
+        if (data[key] !== undefined && JSON.stringify(node[key]) !== JSON.stringify(data[key])) {
+            trySetText(() => { (node as any)[key] = data[key]; });
+        }
+    }
+    if (Array.isArray(data.styledTextSegments) && data.styledTextSegments.length > 0) {
+        await applyStyledTextSegments(node, data.styledTextSegments);
+    }
+}
+
 function trySetRange(fn: () => void) {
     try {
         fn();

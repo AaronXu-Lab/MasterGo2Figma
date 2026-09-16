@@ -409,9 +409,9 @@ the old coverage demo 344/344 and a new real screen `0806` 102 records). Finding
 - **Container field `1a <b>`** — unknown one-byte flag on auto-layout frames. Consuming it is what
   makes the object terminator (and therefore the ANCHORED record trailer) reachable at all.
 - **Trailer `20 <float>` = layoutGrow** ("fill container"). Cross-tab: 7/7 present ⇒ 1, 439/439
-  absent ⇒ 0. Trailer fields `20`/`21`/`22` carry ZERO-COMPRESSED FLOATS, not one-byte values —
-  stepping over them 2 bytes at a time landed mid-float and truncated the walk, losing the 21/22
-  sizing markers behind it.
+  absent ⇒ 0. `20` carries a ZERO-COMPRESSED FLOAT: stepping over it two bytes at a
+  time truncates the walk. Correction from 0915: `21`/`22` are byte enums
+  (0=FIXED, 1=AUTO), not floats; see the 0915 section below.
 - **A slash id IS a template link.** `24:706/24:665` overrides `24:665` whether or not the record
   also carries a tag-`1a` ref; requiring the explicit ref left every stub of an instance whose
   master has no 1a chain (an external-library status bar) with none of the component's
@@ -644,8 +644,9 @@ validated by forward-parsing to a clean terminator:
   `maskRendersFill`（比较器不可见），importer 的 paintFilledMaskTwins 仅在其不为
   false 时补孪生。注意 `1e 01` 也出现在大量非蒙版节点上（0806: 648 个），非蒙版语义未消费；
   **`21` = primaryAxisSizingMode, `22` = counterAxisSizingMode** — field
-  present (value 0) = FIXED, omitted = AUTO (explains AUTO on groups/booleans and hug-content
-  frames; instances inherit from their component instead);
+  byte value 0 = FIXED, byte value 1 = AUTO, omitted = AUTO (explains AUTO on
+  groups/booleans and hug-content frames; silent instance stubs inherit from their
+  component, but an explicit AUTO must not inherit FIXED);
 - `23 <str>` style id; `2a <str>` design-tokens JSON;
 - `25 <b>` + **two** null-terminated sub-objects (roles unknown; sub-field `03 01` common);
 - `27/2b <b>` unknown (`2b 02` co-occurs with dashPattern);
@@ -1270,3 +1271,47 @@ in place, retaining original mask strokes. Existing ZIP needs no re-export.
 Both builds pass; 57/59 tests pass (same two existing failures). Native UI import
 verification was attempted but blocked by CUA noWindowsAvailable on the file
 button; do not claim a completed fresh plugin import for this follow-up.
+
+
+## 2026-09-15 · 0915 full-editor records
+
+Evidence: `测试集/测试集 0915/测试文件 0915.mg`, paired ZIP dated
+2026-09-16T03-02-35-487Z, and the three MasterGo image frames in Figma.
+These additions consume fields sequentially; no tag searches inside float payloads.
+
+| Context | Observed encoding / interpretation | Failure before correction |
+|---|---|---|
+| Paint image sub-object | `0a <zero-float>` is an inactive scalar control alongside 05/06 | Rejecting the whole paint also lost its active solid/gradient fill |
+| Effect record | Initial `04 <byte>` and body `07/10 <byte>` flags must be consumed | Two shadows lost; flag meanings remain unknown |
+| Container component metadata `07` | Object: 01/02/03 CString; 03 containing `+` is external library key; 04 varint; 05/06/08 byte; 00 terminator | Description plus empty 02 hid the key; premature return also lost following layout |
+| Trailer sizing | 21/22 byte 0=FIXED, 1=AUTO; 20 remains zero-float | Reading `21 01` as a float swallowed the next tag; field presence alone misclassified AUTO |
+| Geometry control record | Control index is field 03; full-editor field 05=-1 is inactive vertex index | 05 overwrote the actual control index, connecting curves to wrong control points |
+
+Sizing tracks explicit21/explicit22 separately from fixed-mode flags. The parser
+retains the old non-byte scalar branch for compatibility, without interpreting
+explicit AUTO as an omitted override. Component metadata consumption continues into
+08/09/0a layout fields; early-return INSTANCE metadata can omit both values and
+Missing flags, so spacing/padding inheritance checks value presence as well. Explicit
+zero remains final and inherited metrics remain subject to instance scaling.
+
+Raw slash-ID TEXT records with their own runs are real overrides. A single resolved
+color run may supersede the paint reference on these records; synthesized instance
+children still keep template/override-mirror precedence. This restores six 0915 text
+colors without changing the 汇总 fixture's compared paint differences.
+
+External-key classification now activates the existing dependency-only traversal:
+3525→495 decoded records, 466 baseline records plus 29 records under three temporary
+library masters (6:278, 18:7040, 16:4877). The importer removes these after linking;
+actual canvas verification is necessary because props diff does not cover this.
+
+The UI's slim instance path must retain TEXT fontName/fontSize/lineHeight/letterSpacing,
+case/decoration/alignment/paragraph metrics and styledTextSegments. The main thread
+replays formatting on actual instance children after geometry/paint overrides.
+`事项评价` is the regression case: 14 px / 20 px must override the component's
+11 px / 16 px; restoring characters alone is insufficient. A missing requested font
+retains the loaded master font while restoring the available numeric metrics.
+
+Shared importer correction: promoting a single BOOLEAN_OPERATION child must preserve
+visible outer paint even when the child already has paint. 18:7315/18:5515 has #333333,
+its inner 18:7315/18:5517 has #D8D8D8; both MG and ZIP were gray until outer precedence
+was restored. The white variant must similarly remain white.

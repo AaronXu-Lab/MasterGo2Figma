@@ -1862,3 +1862,44 @@ in place, retaining original mask strokes. Existing ZIP needs no re-export.
 Both builds pass; 57/59 tests pass (same two existing failures). Native UI import
 verification was attempted but blocked by CUA noWindowsAvailable on the file
 button; do not claim a completed fresh plugin import for this follow-up.
+
+
+## 2026-09-15 · 测试集 0915：先恢复完整记录，再验证真实实例
+
+最初只有 MG 页面，补齐 ZIP 与页面 image 后分诊：填充、曲线、外部库残留是
+MG 解码；字号回退和布尔图标颜色是 importer。组件没有 image，按用户要求
+使用 ZIP 的结构与渲染比较，不声称验证了组件的 MasterGo 像素基准。
+
+- 填充记录存在，但 inactive image control 0a 使解析整条失败。补上标量消费后
+  大量背景和颜色回来；effect 04/07/10 flags 同样需要消费。
+- 组件 metadata 07 不能只识别紧跟的 03。0915 在 key 前存 description、空02，
+  并在后面继续布局。顺序解析完整对象后，既有外部库门控恢复作用，额外记录
+  从3059降到29，最终画布没有15个多余组件集。
+- 控制点03与顶点05索引不能混用，full-editor 控制点05=-1覆盖了有效索引，
+  改为只对顶点读取05；曲线、图标恢复。
+- sizing 21/22不是“出现即FIXED”：byte1明确AUTO。稀疏实例的 spacing/padding
+  同时可能缺少Missing flag，继承时要检查字段本身是否存在。
+- compare完整路径正确不代表插件正确。UI精简了实例文字字号，主线程也只恢复
+  characters，导致14/20回退11/16；保留并回放文字格式后，事项评价布局贴合image。
+- 顶部省略号MG/ZIP同错，记录外层#333、内层#D8D8D8均正确，应立即转查
+  promoteSingleBooleanChild。外层paint在子层已有fill时也必须获胜。
+
+三次实际本机插件导入；最终构建2页/466源图层，页面3个根框架、403后代，
+组件15根/60后代，121个文本字体缺失。最终页面见 parity 文档；两个中间版本
+的4页清理掉，保留用户原有MG/ZIP/image页面。三屏三联图、组件ZIP/MG图已复核，
+背景/按钮/标签色样一致；字形和诚信管理字重仍受缺失字体影响。
+
+回归：汇总所有匹配记录的diff集合不变，deep1323；extra集合内临时库母版24:664
+从未解析的默认spacing/padding10恢复为0（layoutMode NONE，无自动布局作用），
+其ID、引用和子树不变。0909全部差异仍为0。两端构建通过，68/70测试通过，
+两项失败在HEAD即存在（visibility default、container padding）。
+
+
+### 0915 ZIP 后续：SVG 视口不是源图层包围盒
+
+用户补充ZIP导入页1:6799后，对照image确认诚信管理两个标签错误。SVG已包含
+阴影留白和路径镜像；把SVG根框架直接resize到源尺寸会缩小真实图形，再给根
+应用source transform/effects则重复镜像、阴影。不要通过补 regions 猜测SVG
+填充，也不要针对某个图层写坐标补丁。仅在svgMissingRegions、单vector、尺寸
+和线性变换都与源匹配时提升路径，让正常属性路径恢复位置/效果一次；保留SVG
+真实轮廓和regions。实际本机ZIP重导入验证，详情见parity文档同日ZIP follow-up。

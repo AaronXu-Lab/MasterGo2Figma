@@ -3,6 +3,7 @@ import { getReceiveCreateType } from "./layerRules";
 import { safeSet, isSceneNode, yieldToEventLoop } from "../../shared/utils";
 import { applyVectorNetwork } from "./appliers/vector";
 import { getFixedMixedTextLines } from "./appliers/multilineText";
+import { unwrapSingleVectorSvg } from "./appliers/svgFallback";
 import { createConnectorVectorNetworkFromData } from "./appliers/connector";
 
 const POSTPROCESS_BATCH_SIZE = 500;
@@ -167,6 +168,7 @@ export async function createNodeFromData(data: any): Promise<SceneNode | null> {
             case "SVG":
                 if (typeof data.svgMarkup === "string" && data.svgMarkup.trim()) {
                     node = figma.createNodeFromSvg(data.svgMarkup);
+                    node = unwrapSingleVectorSvg(node as FrameNode, data);
                 } else {
                     node = figma.createFrame();
                 }

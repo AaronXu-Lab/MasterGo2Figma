@@ -521,3 +521,135 @@ in place, retaining original mask strokes. Existing ZIP needs no re-export.
 Both builds pass; 57/59 tests pass (same two existing failures). Native UI import
 verification was attempted but blocked by CUA noWindowsAvailable on the file
 button; do not claim a completed fresh plugin import for this follow-up.
+
+
+## 2026-09-15 · 测试集 0915
+
+Inputs: `测试集/测试集 0915/测试文件 0915.mg` and
+`mastergo2figma-partial-pages-2026-09-16T03-02-35-487Z.zip`.
+Figma file `9oDyRxEvLn5HdVWNX8QFAT`; original MG/ZIP/image pages retained.
+Component images were intentionally not supplied; component QA uses ZIP only.
+
+| Check | HEAD before | Fixed |
+|---|---:|---:|
+| Decoded records | 3525 | 495 |
+| ZIP records | 466 | 466 |
+| Missing / extra | 0 / 3059 | 0 / 29 |
+| Type / parent differences | 0 / 0 | 0 / 0 |
+| Root/sibling index differences | 2 | 0 |
+| Geometry differences | 1 | 1 |
+| Effect differences | 2 | 0 |
+| Font differences | 92 | 92 |
+| Paint differences | 226 | 21 |
+| Deep prop differences | 4818 | 831 |
+
+Decoder: inactive paint/effect fields, component metadata object, explicit sizing
+bytes, control-point indices, sparse layout inheritance and raw text recolor runs.
+Importer/UI: preserve and replay instance typography, and keep outer boolean paint
+when promoting a child that already has a different visible fill.
+
+Final build was imported through the local Figma plugin: 2 pages / 466 source layers,
+121 missing-font text nodes. Final pages: `1:6102`「页面_mg_修复0915」 and
+`1:6546`「组件_mg_修复0915」. Main page has exactly three frames,403 descendants,
+no residual component sets; component page has15 roots/60 descendants and matches
+ZIP names/types/sizes/child counts. Three temporary library masters and their29
+records support linking and are removed by importer cleanup. Four intermediate
+pages from two earlier imports were removed.
+
+Final main frames: `1:6136` 名录库375×1012, `1:6318` 事项评价375×667,
+`1:6442` 诚信管理375×888. Evaluation instance texts are14px/20px at y108/136/164,
+not the master's11px/16px. Final ellipsis is white in 名录库 and#333333 in the two
+light headers. The remaining serialized union height550 vs ZIP709 is recomputed
+by Figma to709 on node `1:6482`, so the live boolean bounds match.
+
+Three image/ZIP/MG screenshots and a ZIP/MG component comparison were inspected.
+Eleven flat-color samples across page backgrounds/cards/gradient/button/tabs match
+exactly (max channel delta0/255). Full-frame glyph/weight/antialiasing differences
+remain; components have no MasterGo raster baseline. ZIP's existing 诚信管理 tab
+SVG fallback is distorted while corrected MG native geometry matches the image;
+this separate ZIP fallback discrepancy remains outside this native-MG fix.
+
+Remaining831 deep-prop differences are explicitly retained, not declared full parity:
+
+- 529 paint/effect blendMode NORMAL vs PASS_THROUGH encodings.
+- 140 layout:78 sizing,24 constrainProportions,20 layoutAlign,15 inactive icon-frame
+  spacing/padding,2 nested search layoutGrow,1 serialized boolean height. Current
+  screenshots/live bounds show no corresponding major mislayout; resize semantics
+  are not certified by a static render check.
+- 92 font family Source Han Sans CN vs Source Han Sans;121 missing-font nodes in
+  the actual plugin include dependencies/instances, so these are different metrics.
+- 21 hidden white fills on icon frames; no visible fill difference in current render.
+- 49 other:27 names,6 zero-letterSpacing units,3 icon-frame clipping flags,1 lock,
+  8 SVG fallback fields on two records,4 unused zero-vs-one side stroke weights.
+
+Regression A/B used detached HEAD1c2d44a in a separate worktree. 汇总 compared-node
+difference sets/counts remain identical (deep1323,geometry182,transform108,font90,
+paint7,missing0,extra504); its extra temporary master24:664 now consumes metadata
+and records inactive spacing/padding0 instead of10 (layoutMode NONE,unchanged
+identity/reference/subtree). 0909 remains41 records and all comparisons0.
+Only these three MG fixtures are present under the active test directories;
+09008 historical numbers were not rerun. Two builds pass;68/70 tests pass, with
+only the same two HEAD failures (visibility mask default and container padding).
+Eleven added regressions cover decoder fields, sparse inheritance, slim text,
+actual typography replay, and boolean paint precedence.
+
+Decoder/layout/typography/boolean changes require reimport for other existing
+imports. This file's two repaired pages already use the final build and need no
+further reimport. Font availability can be retried with the plugin's「刷新字体」
+after the corresponding fonts are installed; this patch does not install fonts.
+
+
+## 2026-09-15 · 0915 ZIP follow-up: SVG padding, mirror and duplicate shadow
+
+User reproduction page `1:6799` (with component page `1:7224`) uses the same ZIP.
+Against image, two 诚信管理 tab backgrounds were flattened/mirrored incorrectly.
+Source IDs `22:1881` and `22:1878` use `svgMissingRegions`: the API network has no
+regions, so SVG is necessary to retain the closed, rounded fill contour.
+
+The importer previously resized the entire SVG viewport to198×42. The light tab's
+SVG viewport is230×74 including shadow padding, with a198×42 path offset9/12;
+resizing shrank its actual path to170.452×23.838 and moved the boolean bounds.
+The dark tab's SVG path already has a mirror, which combined with the outer source
+transform into two mirrors. Source effects were also assigned to the wrapper in
+addition to the shadow already on its child.
+
+`appliers/svgFallback.ts::unwrapSingleVectorSvg` now promotes the single SVG vector
+before ordinary property application, only for `svgMissingRegions` when its size
+and linear transform match the source local coordinate system. Compound SVGs and
+ambiguous coordinates keep the previous path. The source layout/effect setter
+then applies once to the actual vector. `propertyApplier.ts` preserves SVG-derived
+regions/curves instead of overwriting them with the known-incomplete API network.
+No MG decoder or source ZIP edits; no re-export required.
+
+| Actual canvas check | Before | Final fresh ZIP import |
+|---|---|---|
+| Light-tab path dimensions |170.452×23.838|198×42|
+| Light-tab Y in screen |180.189 wrapper plus6.811 child|187|
+| Dark-tab mirror applications |2|1|
+| Light-tab shadow assignments |wrapper and child|one vector|
+| Page descendants |405|403 (two SVG wrappers removed)|
+
+Final local plugin import succeeded:2pages/466source layers,27missing-font text
+nodes. Delivery pages `1:7285`「页面_zip_修复0915」 and `1:7710`「组件_zip_修复0915」;
+three roots `1:7286` 名录库, `1:7472` 事项评价, `1:7600` 诚信管理. Original user pages
+retained. Final tabs `1:7641` and `1:7644` are editable VECTOR nodes, both198×42;
+transforms are[[-1,0,375],[0,1,187]] and[[1,0,0],[0,1,187]] respectively.
+
+All three image/ZIP/MG comparisons inspected. Eleven background/card/button/tab
+color samples equal the MasterGo image exactly. Full-image mean absolute RGB
+error:名录库0.63/0.60/0.56,事项评价0.42/0.41/0.42,诚信管理3.57/3.53/3.47 (0–255 scale).
+The last screen still differs in text weight due to unavailable fonts; these are
+not pixel-identical claims. Component screenshot is pixel-identical to the prior
+ZIP baseline. No component MasterGo image was supplied, as requested by user.
+
+Both builds pass.71/73tests pass (same2existing visibility/padding failures);
+three added tests cover shadow padding, mirrored paths and conservative fallback.
+0915,汇总,0909 compare diff arrays are exactly unchanged from the immediately
+preceding MG-fix state (deep831/1323/0). They cannot validate SVG rendering, which
+was checked in the live import above. This patch does not modify native decoding,
+so a second HEAD worktree A/B would compare the earlier MG patch rather than this
+SVG-only change and was not needed.
+
+The two repaired ZIP pages need no further action. Other already-imported ZIP
+pages require reimport with this build; the existing ZIP package can be reused.
+Font availability can be retried through「刷新字体」after installing those fonts.

@@ -32,7 +32,9 @@ export async function applyProperties(node: any, data: any) {
         }
     }
 
-    if (node.type === "VECTOR" && data.vectorNetwork) {
+    // SVG fallback supplies the missing regions and rounded path geometry.
+    // Replaying the incomplete source network would erase those again.
+    if (node.type === "VECTOR" && data.vectorNetwork && !data.svgFallback) {
         await applyVectorNetwork(node as VectorNode, data.vectorNetwork, data);
         reapplyVectorStrokeGeometry(node as VectorNode, data);
     }

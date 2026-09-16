@@ -531,17 +531,13 @@ export async function promoteSingleBooleanChild(
 
 // A Figma boolean node renders with ITS OWN paint. MasterGo nests booleans with
 // the paint on the OUTER one (Mobile Signal/Wifi status icons: outer EXCLUDE
-// carries the solid, inner EXCLUDE carries none) — promoting the single child
-// without the outer record's fills imported them invisible.
+// carries the solid, inner EXCLUDE carries none). The outer paint also wins
+// when the inner boolean has a different fill, as in the 0915 ellipsis icon.
 function applyOuterBooleanPaint(child: SceneNode, data: any) {
     if (child.type !== "BOOLEAN_OPERATION") return;
     const geometry = data && data.geometry;
     const outerFills = geometry && geometry.fills;
     if (!Array.isArray(outerFills) || !outerFills.some((f: any) => f && f.visible !== false)) return;
-    const childFills = (child as any).fills;
-    const childHasFill = Array.isArray(childFills) &&
-        childFills.some((f: any) => f && f.visible !== false);
-    if (childHasFill) return;
     safeSetFills(child, normalizeImageFills(outerFills, child, data.layout));
     const outerStrokes = geometry.strokes;
     if (Array.isArray(outerStrokes) && outerStrokes.length > 0) {

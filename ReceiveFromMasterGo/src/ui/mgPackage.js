@@ -670,8 +670,8 @@
             continue;
           }
           // Full editor records serialize inactive image controls too.
-          // 05/06 are scalar controls and 09 is a byte flag (0906 杂记).
-          if (t === 0x05 || t === 0x06) { zfloat(); continue; }
+          // 05/06/0a are scalar controls; 09 is a byte flag (0906/0915).
+          if (t === 0x05 || t === 0x06 || t === 0x0a) { zfloat(); continue; }
           if (t === 0x09) { p++; continue; }
           if (t === 0x07 || t === 0x08) {
             const v = zfloat();
@@ -915,6 +915,7 @@
         const mk = marks[i];
         const end = (i + 1 < marks.length) ? marks[i + 1].start : Math.min(mk.start + 400, bytes.length);
         let p = mk.end;
+        if (bytes[p] === 0x04) p += 2; // inactive full-editor flag
         // Kind 0 (INNER_SHADOW) is zero-compressed away — accept entries that
         // open directly with an effect field tag. Entries opening with any
         // other tag are not effect records (paint/geometry registries share
@@ -953,6 +954,7 @@
             continue;
           }
           if (t === 0x06) { visible = bytes[p + 1] !== 0; p += 2; continue; }
+          if (t === 0x07 || t === 0x10) { p += 2; continue; }
           // 0909 effect field 16 carries a zero-compressed scalar; its
           // rendering meaning is unknown. Consume it without replacing radius 09.
           if (t === 0x09 || t === 0x0a || t === 0x0b || t === 0x0c || t === 0x0f || t === 0x16) {
@@ -1437,16 +1439,23 @@
             p = r.next;
             continue;
           }
-          // 20/21/22 carry ZERO-COMPRESSED FLOATS, not one-byte values: `20
-          // 7f 00 00 00` is layoutGrow 1. Stepping over them two bytes at a
-          // time landed mid-float and cut the walk short, losing the 21/22
-          // sizing markers that follow.
-          if (t === 0x20 || t === 0x21 || t === 0x22) {
+          // 20 is a zero-compressed float (layoutGrow). 21/22 are sizing
+          // enums: 0=FIXED, 1=AUTO. Full-editor records write explicit 1;
+          // treating it as a float swallows the following sizing field.
+          // Retain compatibility with the historical scalar spelling.
+          if (t === 0x21 || t === 0x22) {
+            const r = bytes[p + 1] <= 1
+              ? { value: bytes[p + 1], next: p + 2 }
+              : mgReadZeroFloat(bytes, p + 1);
+            if (t === 0x21) { fields.has21 = r.value !== 1; fields.explicit21 = true; }
+            if (t === 0x22) { fields.has22 = r.value !== 1; fields.explicit22 = true; }
+            p = r.next;
+            continue;
+          }
+          if (t === 0x20) {
             const r = mgReadZeroFloat(bytes, p + 1);
             if (!isFinite(r.value) || Math.abs(r.value) > 1e5) return null;
-            if (t === 0x20) fields.layoutGrow = r.value;
-            if (t === 0x21) fields.has21 = true;
-            if (t === 0x22) fields.has22 = true;
+            fields.layoutGrow = r.value;
             p = r.next;
             continue;
           }
@@ -1621,50 +1630,34 @@
         }
       }
       if (bytes[p] === 0x07) {
-        // Field 07 sub-tag 03 = an EXTERNAL library key ("<libraryFileId>+<nodeId>");
-        // sub-tag 04 = a local numeric stamp. Masters carrying a library key are
-        // MasterGo's off-canvas copies of a shared-library component: its own
-        // page traversal never yields them, so the importer restores them only
-        // to re-link instances and deletes them when the import finishes.
-        if (bytes[p + 1] === 0x03) {
-          const libKey = mgReadCString(bytes, p + 2, Math.min(off + 512, p + 200));
-          if (libKey && libKey.text.indexOf("+") > 0) meta.libraryKey = libKey.text;
-        } else if (bytes[p + 1] === 0x01) {
-          // 临时测试 spelling: `07 01 <description string> 00 03 <library key>`
-          // — a component-set DESCRIPTION precedes the external key
-          // (MGLogo外描边 imported as a visible canvas extra without this).
-          const desc = mgReadCString(bytes, p + 2, Math.min(off + 512, p + 300));
-          if (desc && bytes[desc.end + 1] === 0x03) {
-            const libKey = mgReadCString(bytes, desc.end + 2, Math.min(off + 768, desc.end + 200));
-            if (libKey && libKey.text.indexOf("+") > 0) meta.libraryKey = libKey.text;
-          }
-        }
-        if (meta.subtype === "COMPONENT") {
+        if (bytes[p + 1] === 0x00) {
+          p += 2;
+        } else {
+          if (meta.subtype === "FRAME") meta.subtype = "COMPONENT_SET";
+          // Component metadata is an object, not a single key string. Full
+          // editor exports include empty description/url and inactive flags.
           p++;
-          while (bytes[p] !== 0x00 && p < off + 256) p++;
-          p++;
-          // Share/partial exports append `04 <varint>` (version stamp?) and a
-          // `05 <b> 00` sub-object after the component key; skip both so the
-          // auto-layout fields that follow stay reachable.
-          if (bytes[p] === 0x04 && bytes[p + 1] !== 0x04) {
-            p++;
-            while ((bytes[p] & 0x80) !== 0 && p < off + 256) p++;
-            p++;
-            if (bytes[p] === 0x05) {
-              p += 2;
-              if (bytes[p] === 0x00 && (bytes[p + 1] === 0x08 || bytes[p + 1] === 0x09 || bytes[p + 1] === 0x0a || bytes[p + 1] === 0x0d || bytes[p + 1] === 0x17)) p++;
+          const metadataEnd = Math.min(bytes.length, off + 4096);
+          while (p < metadataEnd && bytes[p] !== 0x00) {
+            const tag = bytes[p++];
+            if (tag === 0x01 || tag === 0x02 || tag === 0x03) {
+              const c = mgReadCString(bytes, p, metadataEnd);
+              if (!c) return meta;
+              if (tag === 0x03 && c.text.indexOf("+") > 0) meta.libraryKey = c.text;
+              p = c.end + 1;
+            } else if (tag === 0x04) {
+              let count = 0;
+              while (p < metadataEnd && (bytes[p++] & 0x80) !== 0) {
+                if (++count >= 10) return meta;
+              }
+            } else if (tag === 0x05 || tag === 0x06 || tag === 0x08) {
+              p++;
+            } else {
+              return meta;
             }
           }
-        } else if (bytes[p + 1] !== 0x00) {
-          // A non-zero field 07 = COMPONENT_SET (payload is a key string in
-          // share exports, a `04 <varint>` stamp object in full exports).
-          // `07 00` is the 0711-3 explicit-zero flag spelling.
-          if (meta.subtype === "FRAME") { meta.subtype = "COMPONENT_SET"; return meta; }
+          if (bytes[p] !== 0x00) return meta;
           p++;
-          while (bytes[p] !== 0x00 && p < off + 256) p++;
-          p++;
-        } else {
-          p += 2;
         }
       }
       if (bytes[p] === 0x08 && (bytes[p + 1] === 1 || bytes[p + 1] === 2)) {
@@ -1847,7 +1840,13 @@
           if (t === 0x02) { rec.y = zeroFloat(); continue; }
           if (t === 0x03) { if (isVertex) rec.flag = varint(); else rec.index = varint(); continue; }
           if (t === 0x04) { rec.cornerRadius = zeroFloat(); continue; }
-          if (t === 0x05) { rec.index = varint(); continue; }
+          if (t === 0x05) {
+            const value = varint();
+            // Controls use field 03 for their index. Full editor exports
+            // additionally write the inactive vertex index as 05 = -1.
+            if (isVertex) rec.index = value;
+            continue;
+          }
           if (t === 0x07) { rec.cap = varint(); continue; }
           return null;
         }
@@ -2873,8 +2872,8 @@
         // Values the instance spells out itself are FINAL; only the ones it
         // borrows from the component still need the instance scale.
         meta.__ownCorners = !!ownMeta.corners && !ownMeta.cornersInherited;
-        meta.__ownSpacing = !ownMeta.itemSpacingMissing && !ownMeta.itemSpacingInherited;
-        meta.__ownPaddings = !ownMeta.paddingsMissing && !ownMeta.paddingsInherited;
+        meta.__ownSpacing = ownMeta.itemSpacing !== undefined && !ownMeta.itemSpacingMissing && !ownMeta.itemSpacingInherited;
+        meta.__ownPaddings = !!ownMeta.paddings && !ownMeta.paddingsMissing && !ownMeta.paddingsInherited;
         mgFillContainerMeta(meta, n.inheritedMeta);
       }
       // Tag 17 is the EFFECT STYLE reference (docs/MG_DECODER.md「Library
@@ -3096,8 +3095,7 @@
         }
         if (meta.primaryAlign) props.layout.primaryAxisAlignItems = meta.primaryAlign;
         if (meta.counterAlign) props.layout.counterAxisAlignItems = meta.counterAlign;
-        // Sizing modes live in the record trailer: field 21/22 present = FIXED,
-        // omitted = AUTO. Instances inherit their component's trailer.
+        // Sizing modes live in trailer fields 21/22: 0=FIXED, 1/omitted=AUTO. Instances inherit their component's trailer.
         // SECTIONs have no auto-layout; the exporter always emits FIXED/FIXED
         // for them regardless of trailer fields.
         if (types.type === "SECTION") {
@@ -3117,7 +3115,7 @@
           // said nothing about sizing, so the component's markers stand (0806
           // tab-bar row: template 21 = FIXED primary, stub silent → the row
           // hugged its contents instead of filling the 750pt bar).
-          const sizeTrailer = (!trailer.has21 && !trailer.has22 && n.inheritedTrailer &&
+          const sizeTrailer = (!trailer.explicit21 && !trailer.explicit22 && n.inheritedTrailer &&
             (inheritedTrailer.has21 || inheritedTrailer.has22)) ? inheritedTrailer : trailer;
           props.layout.primaryAxisSizingMode = sizeTrailer.has21 ? "FIXED" : "AUTO";
           props.layout.counterAxisSizingMode = sizeTrailer.has22 ? "FIXED" : "AUTO";
@@ -3157,9 +3155,10 @@
         // edited black), so the run's paint wins when both resolve. Instance
         // expansion clones (slash ids) keep the template's paintRef semantics
         // — their per-instance color truth is the override mirror, not the
-        // cloned run table (Tesla OPEN labels).
+        // cloned run table (Tesla OPEN labels). Real raw override records
+        // with their own run table remain authoritative (0915 text recolors).
         if (colorRuns && colorRuns.length === 1 && fontRuns && fontRuns.length <= 1 &&
-            String(n.id || "").indexOf("/") < 0 &&
+            (String(n.id || "").indexOf("/") < 0 || (n.isRawRecord && !n.isSynthesizedInstanceChild)) &&
             paints[colorRuns[0].paintRef] && colorRuns[0].paintRef !== n.paintRef && props.geometry) {
           props.geometry.fills = paints[colorRuns[0].paintRef].map(mgCloneJsonValue);
           mgFinalizeRadialPaints(props.geometry.fills, n.w, n.h);
@@ -4143,12 +4142,12 @@
       // stamps 核心功能 2 kept the component's raw 16/20/24 instead of the
       // page's 8.62/10.77/12.93.
       if (!own.corners && tpl.corners) { own.corners = tpl.corners; own.cornersInherited = true; }
-      if (own.itemSpacingMissing && !tpl.itemSpacingMissing) {
+      if ((own.itemSpacingMissing || own.itemSpacing === undefined) && !tpl.itemSpacingMissing && tpl.itemSpacing !== undefined) {
         own.itemSpacing = tpl.itemSpacing;
         own.itemSpacingMissing = false;
         own.itemSpacingInherited = true;
       }
-      if (own.paddingsMissing && !tpl.paddingsMissing) {
+      if ((own.paddingsMissing || own.paddings === undefined) && !tpl.paddingsMissing && tpl.paddings) {
         own.paddings = tpl.paddings;
         own.paddingsMissing = false;
         own.paddingsInherited = true;
@@ -4519,6 +4518,13 @@
       if (props.restoreType !== undefined) slim.restoreType = props.restoreType;
       if (props.name !== undefined) slim.name = props.name;
       if (props.characters !== undefined) slim.characters = props.characters;
+      if (props.type === "TEXT") {
+        for (const key of ["fontName", "fontSize", "lineHeight", "letterSpacing",
+          "textCase", "textDecoration", "textAlignHorizontal", "textAlignVertical",
+          "paragraphIndent", "paragraphSpacing", "styledTextSegments"]) {
+          if (props[key] !== undefined) slim[key] = props[key];
+        }
+      }
       if (props.booleanOperation !== undefined) slim.booleanOperation = props.booleanOperation;
       if (props.shellPlaceholder !== undefined) slim.shellPlaceholder = props.shellPlaceholder;
       if (props.scence) slim.scence = props.scence;
@@ -5163,6 +5169,8 @@
       decodeNativeNodes: mgDecodeNativeNodes,
       decodeGeometryBlob: mgDecodeGeometryBlob,
       parseContainerMeta: mgParseContainerMeta,
+      parseTrailer: mgParseTrailer,
+      fillContainerMeta: mgFillContainerMeta,
       walkScalarFields: mgWalkScalarFields,
       normalizeRotation: mgNormalizeRotation,
       parseTextRuns: mgParseTextRuns,

@@ -539,6 +539,45 @@ ${style}`;
       }
     });
   }
+  function applyInstanceTextFormatting(node, data) {
+    return __async(this, null, function* () {
+      for (const segment of node.getStyledTextSegments(["fontName"])) {
+        yield loadFontCached(segment.fontName);
+      }
+      if (data.fontName) {
+        yield ensureAvailableFontsLoaded();
+        const resolved = resolveAvailableFontName(data.fontName);
+        if (resolved) {
+          yield loadFontCached(resolved);
+          if (node.fontName === figma.mixed || node.fontName.family !== resolved.family || node.fontName.style !== resolved.style) {
+            node.fontName = resolved;
+          }
+        }
+      }
+      if (Number.isFinite(data.fontSize) && data.fontSize > 0 && node.fontSize !== data.fontSize) {
+        node.fontSize = data.fontSize;
+      }
+      for (const key of [
+        "lineHeight",
+        "letterSpacing",
+        "textCase",
+        "textDecoration",
+        "textAlignHorizontal",
+        "textAlignVertical",
+        "paragraphIndent",
+        "paragraphSpacing"
+      ]) {
+        if (data[key] !== void 0 && JSON.stringify(node[key]) !== JSON.stringify(data[key])) {
+          trySetText(() => {
+            node[key] = data[key];
+          });
+        }
+      }
+      if (Array.isArray(data.styledTextSegments) && data.styledTextSegments.length > 0) {
+        yield applyStyledTextSegments(node, data.styledTextSegments);
+      }
+    });
+  }
   function trySetRange(fn) {
     try {
       fn();
@@ -1367,6 +1406,27 @@ ${style}`;
     return sizes.indexOf(null) >= 0 || new Set(sizes).size < 2 ? null : result;
   }
 
+  // src/appliers/svgFallback.ts
+  function unwrapSingleVectorSvg(root, data) {
+    var _a;
+    if ((data == null ? void 0 : data.vectorFallback) !== "svgMissingRegions" || root.children.length !== 1) return root;
+    const child = root.children[0];
+    if (child.type !== "VECTOR" || !root.parent || !("appendChild" in root.parent)) return root;
+    const layout = data.layout;
+    const transform = layout == null ? void 0 : layout.relativeTransform;
+    if (!transform || ![layout.width, layout.height].every(Number.isFinite)) return root;
+    const tolerance = 0.01;
+    if (Math.abs(child.width - layout.width) > tolerance || Math.abs(child.height - layout.height) > tolerance) return root;
+    for (let row = 0; row < 2; row++) {
+      for (let col = 0; col < 2; col++) {
+        if (!Number.isFinite((_a = transform[row]) == null ? void 0 : _a[col]) || Math.abs(child.relativeTransform[row][col] - transform[row][col]) > 1e-5) return root;
+      }
+    }
+    root.parent.appendChild(child);
+    root.remove();
+    return child;
+  }
+
   // src/nodeCreator.ts
   var POSTPROCESS_BATCH_SIZE2 = 500;
   var POSTPROCESS_YIELD_INTERVAL_MS2 = 50;
@@ -1490,6 +1550,7 @@ ${style}`;
           case "SVG":
             if (typeof data.svgMarkup === "string" && data.svgMarkup.trim()) {
               node = figma.createNodeFromSvg(data.svgMarkup);
+              node = unwrapSingleVectorSvg(node, data);
             } else {
               node = figma.createFrame();
             }
@@ -2089,7 +2150,7 @@ ${style}`;
           line.y = index * data.lineHeight.value;
         }
       }
-      if (node.type === "VECTOR" && data.vectorNetwork) {
+      if (node.type === "VECTOR" && data.vectorNetwork && !data.svgFallback) {
         yield applyVectorNetwork(node, data.vectorNetwork, data);
         reapplyVectorStrokeGeometry(node, data);
       }
@@ -2478,9 +2539,6 @@ ${style}`;
     const geometry = data && data.geometry;
     const outerFills = geometry && geometry.fills;
     if (!Array.isArray(outerFills) || !outerFills.some((f) => f && f.visible !== false)) return;
-    const childFills = child.fills;
-    const childHasFill = Array.isArray(childFills) && childFills.some((f) => f && f.visible !== false);
-    if (childHasFill) return;
     safeSetFills(child, normalizeImageFills(outerFills, child, data.layout));
     const outerStrokes = geometry.strokes;
     if (Array.isArray(outerStrokes) && outerStrokes.length > 0) {
@@ -3765,6 +3823,12 @@ ${style}`;
               const have = comparablePaintKey(node.strokes);
               if (want !== null && want !== have) safeSetStrokes(node, geometry.strokes);
             }
+          } catch (error) {
+          }
+        }
+        if (node.type === "TEXT") {
+          try {
+            yield applyInstanceTextFormatting(node, props);
           } catch (error) {
           }
         }
