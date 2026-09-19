@@ -653,3 +653,36 @@ SVG-only change and was not needed.
 The two repaired ZIP pages need no further action. Other already-imported ZIP
 pages require reimport with this build; the existing ZIP package can be reused.
 Font availability can be retried through「刷新字体」after installing those fonts.
+
+## 2026-09-19 · Connector text fallback
+
+Inputs: `测试集/地面站设计草稿_优化改版过程中的需求.mg` and
+`测试集/日常需求 -徐炜楠_车机体验度量.mg` (no baseline ZIP supplied).
+Both decode and validate successfully. Original live imports failed with
+`expected=47186, actual=47182` and `expected=646, actual=645` respectively.
+The missing records were four connector text children (检查成功、检查失败、
+收到检查开始反馈、停止失败) and one connector text child (七宗罪).
+
+Per the requested policy, the importer keeps only the connector VECTOR and
+appends `_text in line: {TEXT}` to its source name. Multiple direct text labels
+are joined with ` | ` in child order. Text content, including line breaks and
+empty strings, is preserved; no separate text nodes are created. Consumed text
+records count toward processed source records so the strict page/session
+checks remain intact. Missing records, non-text children and malformed text
+subtrees are not silently counted as processed. Instance child overrides also
+refresh the suffix from their own label records.
+
+Native decoding, input files and package record counts are unchanged. Both
+plugin builds pass; 74/76 Node tests pass, including three new fallback tests.
+The two existing `mgPackage.test.js` visibility/container-meta failures remain;
+that test and its decoder are unchanged from HEAD. The offline production
+traversal reproduction now completes for both pages with their original source
+record counts.
+
+Fresh imports of both files complete in Figma file `4jw0wDUFElxyrciBTHOt9l`.
+MCP verifies all five affected nodes are VECTORs without children and have the
+requested suffix: `连接线 2_text in line: 七宗罪`, `连接线 6_text in line: 检查成功`,
+`连接线 7_text in line: 检查失败`, `连接线 5_text in line: 收到检查开始反馈`, and
+`连接线 10_text in line: 停止失败`. The two temporary verification pages and their
+imported text styles were removed after checking. Existing documents require
+reimport with the rebuilt plugin to apply this fallback.

@@ -1,9 +1,35 @@
 import { state } from "../state";
+import { ImportLayerRecord } from "../../../shared/types";
 import { safeSet, isSceneNode } from "../../../shared/utils";
 import { 
     createConnectorRoutePoints, getConnectorCornerRadius, 
     normalizeConnectorVectorStrokeCap 
 } from "../../../shared/connectorUtils";
+
+// Design-mode connectors are vectors, so their text children cannot be mounted.
+// Preserve the labels in the name and account for only those intentionally
+// consumed records; unexpected or missing children must still fail validation.
+export function applyConnectorTextFallback(
+    node: SceneNode,
+    record: ImportLayerRecord,
+    layers: { [id: string]: ImportLayerRecord }
+): number {
+    const props = record.props;
+    if (node.type !== "VECTOR" ||
+        (props.sourceType !== "CONNECTOR" && props.type !== "CONNECTOR" && props.restoreType !== "CONNECTOR")) return 0;
+
+    const labels: string[] = [];
+    for (const childId of record.childIds || []) {
+        const child = layers[childId];
+        if (!child || child.props?.type !== "TEXT" || (child.childIds || []).length > 0) continue;
+        if (typeof child.props.characters !== "string") continue;
+        labels.push(child.props.characters);
+    }
+    if (labels.length > 0) {
+        node.name = `${props.name ?? record.name ?? node.name}_text in line: ${labels.join(" | ")}`;
+    }
+    return labels.length;
+}
 
 export function normalizeConnectorMagnet(value: any) {
     if (value === "TOP" || value === "LEFT" || value === "BOTTOM" || value === "RIGHT" || value === "NONE" || value === "AUTO") {

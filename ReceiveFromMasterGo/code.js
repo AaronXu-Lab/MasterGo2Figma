@@ -832,6 +832,22 @@ ${style}`;
   }
 
   // src/appliers/connector.ts
+  function applyConnectorTextFallback(node, record, layers) {
+    var _a, _b, _c;
+    const props = record.props;
+    if (node.type !== "VECTOR" || props.sourceType !== "CONNECTOR" && props.type !== "CONNECTOR" && props.restoreType !== "CONNECTOR") return 0;
+    const labels = [];
+    for (const childId of record.childIds || []) {
+      const child = layers[childId];
+      if (!child || ((_a = child.props) == null ? void 0 : _a.type) !== "TEXT" || (child.childIds || []).length > 0) continue;
+      if (typeof child.props.characters !== "string") continue;
+      labels.push(child.props.characters);
+    }
+    if (labels.length > 0) {
+      node.name = `${(_c = (_b = props.name) != null ? _b : record.name) != null ? _c : node.name}_text in line: ${labels.join(" | ")}`;
+    }
+    return labels.length;
+  }
   function normalizeConnectorMagnet(value) {
     if (value === "TOP" || value === "LEFT" || value === "BOTTOM" || value === "RIGHT" || value === "NONE" || value === "AUTO") {
       return value;
@@ -3375,7 +3391,7 @@ ${style}`;
     return null;
   }
   function createRestoredPageName(name) {
-    return name || "Imported Page";
+    return (name || "Imported Page").replace(/\//g, "\u2215");
   }
   function maybeReportRestoreProgress(current, total, force = false) {
     return __async(this, null, function* () {
@@ -3545,7 +3561,7 @@ ${style}`;
         }
       }
       yield applyImportedStyleBindings(newNode, layerRecord);
-      let restoredCount = 1;
+      let restoredCount = 1 + applyConnectorTextFallback(newNode, layerRecord, layers);
       const currentCount = restoredBefore + restoredCount;
       const progressStartedAt = Date.now();
       yield maybeReportRestoreProgress(currentCount, totalNodes);
@@ -3771,6 +3787,10 @@ ${style}`;
       collect(instance, record);
       for (const { node, rec } of pairs) {
         const props = rec.props;
+        try {
+          applyConnectorTextFallback(node, rec, layers);
+        } catch (error) {
+        }
         try {
           if (props.scence && props.scence.visible === false && node.visible !== false) node.visible = false;
           else if (props.scence && props.scence.visible === true && node.visible === false) node.visible = true;

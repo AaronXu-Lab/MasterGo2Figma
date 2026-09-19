@@ -7,6 +7,7 @@ import {
 import { restoreMissingFontTextLayers, applyInstanceTextFormatting } from "./appliers/text";
 import {
   applyDeferredConnectorRestores,
+  applyConnectorTextFallback,
   createConnectorVectorNetworkFromData
 } from "./appliers/connector";
 import {
@@ -940,7 +941,10 @@ function normalizeBytes(value: any): Uint8Array | null {
 }
 
 function createRestoredPageName(name: string): string {
-  return name || "Imported Page";
+  // Figma percent-encodes an ASCII slash in PageNode names as "%2F".
+  // Use the visually equivalent division slash only for page names so the
+  // source hierarchy remains readable without changing layer names or paths.
+  return (name || "Imported Page").replace(/\//g, "∕");
 }
 
 async function maybeReportRestoreProgress(current: number, total: number, force = false) {
@@ -1148,7 +1152,7 @@ async function restoreImportedNode(
   }
   await applyImportedStyleBindings(newNode, layerRecord);
 
-  let restoredCount = 1;
+  let restoredCount = 1 + applyConnectorTextFallback(newNode, layerRecord, layers);
   const currentCount = restoredBefore + restoredCount;
   const progressStartedAt = Date.now();
   await maybeReportRestoreProgress(currentCount, totalNodes);
@@ -1454,6 +1458,9 @@ async function applyInstanceChildOverrides(
   collect(instance, record);
   for (const { node, rec } of pairs) {
     const props = rec.props;
+    try {
+      applyConnectorTextFallback(node, rec, layers);
+    } catch (error) { /* instance sublayer name may not be overridable */ }
     try {
       if (props.scence && props.scence.visible === false && node.visible !== false) node.visible = false;
       else if (props.scence && props.scence.visible === true && node.visible === false) node.visible = true;
