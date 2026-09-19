@@ -686,3 +686,18 @@ requested suffix: `连接线 2_text in line: 七宗罪`, `连接线 6_text in li
 `连接线 10_text in line: 停止失败`. The two temporary verification pages and their
 imported text styles were removed after checking. Existing documents require
 reimport with the rebuilt plugin to apply this fallback.
+
+## 2026-09-20 · Correct stale visibility/container test fixtures
+
+The two previously reported failures were outdated test expectations, not newly
+confirmed decoder defects. The visibility test's explicit `0x04` mask assertion
+already passed; its second assertion omitted the mask and expected visible in
+the default full-editor mode. Such stubs inherit slot visibility (see the
+0711-3 rules in `MG_DECODER.md`). The corrected test covers both hidden and
+visible slots while retaining the separate explicit-mask check.
+
+The absent-padding fixture used `01 01` (FRAME) but expected BOOLEAN_OPERATION.
+It now uses the documented group-like discriminator `01 00` followed by Boolean
+kind `02 01`. A separate test distinguishes FRAME, GROUP and BOOLEAN_OPERATION
+and checks missing padding for all three, plus FRAME clipping preservation.
+Decoder behavior is unchanged. All 80 Node tests pass.

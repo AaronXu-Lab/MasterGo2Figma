@@ -9,7 +9,11 @@ test("instance visibility precedence preserves explicit scalar values", () => {
 
 test("shallow visibility mask resolves omitted scalar to visible", () => {
   assert.equal(__test.resolveInstanceVisibility(undefined, 0x04, 0, true), 1);
-  assert.equal(__test.resolveInstanceVisibility(undefined, undefined, 0, true), 1);
+});
+
+test("full-editor stubs without a visibility scalar or mask inherit the slot", () => {
+  assert.equal(__test.resolveInstanceVisibility(undefined, undefined, 0, true), 0);
+  assert.equal(__test.resolveInstanceVisibility(undefined, undefined, 1, true), 1);
 });
 
 test("non-visibility masks and synthesized children inherit the slot", () => {
@@ -218,10 +222,24 @@ test("container meta padding spellings: explicit, empty object, absent object", 
   const emptyObj = Uint8Array.from([0x0a, 0x00]);
   assert.equal(__test.parseContainerMeta(emptyObj, 0).paddingsMissing, true);
   // Wholly absent 0a → same omitted-field default rule (测试集 0710-2 GROUP/BOOLEAN).
-  const absent = Uint8Array.from([0x01, 0x01, 0x02, 0x01, 0x00]);
+  const absent = Uint8Array.from([0x01, 0x00, 0x02, 0x01, 0x00]);
   const m3 = __test.parseContainerMeta(absent, 0);
   assert.equal(m3.subtype, "BOOLEAN_OPERATION");
   assert.equal(m3.paddingsMissing, true);
+});
+
+test("container flag value distinguishes frames, groups and Boolean operations", () => {
+  const cases = [
+    { bytes: [0x01, 0x01, 0x03, 0x01, 0x00], subtype: "FRAME" },
+    { bytes: [0x01, 0x00, 0x00], subtype: "GROUP" },
+    { bytes: [0x01, 0x00, 0x02, 0x01, 0x00], subtype: "BOOLEAN_OPERATION" }
+  ];
+  for (const { bytes, subtype } of cases) {
+    const meta = __test.parseContainerMeta(Uint8Array.from(bytes), 0);
+    assert.equal(meta.subtype, subtype);
+    assert.equal(meta.paddingsMissing, true);
+    if (subtype === "FRAME") assert.equal(meta.clipsContent, true);
+  }
 });
 
 // The plugin UI converts .mg with { slimInstanceDescendants: true } to survive
