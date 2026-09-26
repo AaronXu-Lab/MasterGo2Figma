@@ -83,7 +83,7 @@
 | effect 记录字段 `0d` / `0e` | 未破解 | 尾部 flag，跳过无碍 |
 | effect 记录字段 `0x11` | 已消费未破义（2026-08-06） | 单字节旗标，汇总集 20/20 恒为 `01` 且后面紧跟 `18`；**不消费会让整条特效被丢弃**（40 个模糊消失） |
 | 实例 override 的**深层 key** | **已破解（2026-08-06）** | key 是扁平的 `<实例 id>/<模板节点 id>`，与嵌套深度无关；其 `02 <parent>` 可以指向一条并不存在的镜像记录（`24:1747/24:0946`.parent = `24:1747/24:0944`，文件里没有）。因此展开必须同时尝试「逐层 tplPath」和「实例根 + 节点 id」两种 key |
-| `layoutAlign = STRETCH` 的来源字节 | **未定位** | 汇总集 18 个节点基准为 STRETCH，其余 INHERIT。已排除：trailer（`STRETCH \| 空 trailer` 9 例与 `INHERIT \| 空 trailer` 232 例共存）、`hasExplicitW/H`、`layoutGrow`、父级 layoutMode，四维交叉表均无分离度。下一步应查容器对象 `1c 07` 的未破字段（`0x0f`？）|
+| `layoutAlign = STRETCH` 的来源字节 | **已破解（2026-09-19）：trailer `1f 01`**（0920 全量 raw 记录 273/273 vs 0/976；stub 缺失时继承模板子节点） | 汇总集 18 个节点基准为 STRETCH，其余 INHERIT。已排除：trailer（`STRETCH \| 空 trailer` 9 例与 `INHERIT \| 空 trailer` 232 例共存）、`hasExplicitW/H`、`layoutGrow`、父级 layoutMode，四维交叉表均无分离度。下一步应查容器对象 `1c 07` 的未破字段（`0x0f`？）|
 | 几何 blob 顶点 flag `03` 的取值 1/2/3 | 未破解 | VN 主体已全解，边角语义未明 |
 | 几何 blob `06` trailer | 未破解 | — |
 | 容器对齐枚举 `0d/0e` 的 MAX/SPACE_BETWEEN 取值 | **已破解（2026-07-13，统一集，分轴）** | primary(`0d`)：1=MAX 2=CENTER **3=SPACE_BETWEEN**（al/space-between-3 实测）4=SPACE_BETWEEN；counter(`0e`)：1=MAX 2=CENTER 3=MAX。旧共享表 3:"MAX" 曾把三子 SPACE_BETWEEN 解成右挤 |

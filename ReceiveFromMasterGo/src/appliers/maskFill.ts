@@ -15,3 +15,17 @@ export function isBackdropCoverageMask(fills: any, strokes: any, effects: any): 
     paints[0].opacity > 0 && paints[0].opacity < 1 &&
     paints[0].color?.r === 0 && paints[0].color?.g === 0 && paints[0].color?.b === 0;
 }
+
+// MasterGo uses its default gray for alpha-only masks, including gradients
+// whose stops vary coverage but retain the same untouched placeholder RGB.
+export function isDefaultMaskFill(paints: any): boolean {
+  if (!Array.isArray(paints) || paints.length !== 1 || !paints[0]) return false;
+  const paint = paints[0];
+  const isDefaultGray = (color: any) => color && [color.r, color.g, color.b].every(
+    value => typeof value === "number" && Math.abs(value - 216 / 255) < 1e-3);
+  if (paint.type === "SOLID") return !!isDefaultGray(paint.color);
+  return typeof paint.type === "string" && paint.type.startsWith("GRADIENT_") &&
+    Array.isArray(paint.gradientStops) && paint.gradientStops.length > 1 &&
+    paint.gradientStops.every((stop: any) => isDefaultGray(stop.color)) &&
+    paint.gradientStops.some((stop: any) => stop.color.a < 1);
+}

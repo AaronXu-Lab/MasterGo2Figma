@@ -16,3 +16,12 @@ test('background blur coverage masks do not add a second black veil', () => {
   assert.equal(isBackdropCoverageMask([fill],[{...fill,opacity:1}],effects),false);
   assert.equal(isBackdropCoverageMask([fill],[{type:'SOLID',visible:true,opacity:1,color:{r:1,g:1,b:1}}],effects),true);
 });
+
+
+test('default gray alpha gradients never add a gray backdrop twin', () => {
+  const gray = {r:216/255,g:216/255,b:216/255};
+  const gradient = {type:'GRADIENT_LINEAR',gradientStops:[{position:0,color:{...gray,a:1}},{position:1,color:{...gray,a:0}}]};
+  assert.equal(mod.exports.isDefaultMaskFill([gradient]),true);
+  assert.equal(mod.exports.isDefaultMaskFill([{...gradient,gradientStops:[{color:{...gray,a:1}},{color:{r:1,g:0,b:0,a:0}}]}]),false);
+  assert.equal(mod.exports.isDefaultMaskFill([{...gradient,gradientStops:[{color:{...gray,a:1}},{color:{...gray,a:1}}]}]),false);
+});

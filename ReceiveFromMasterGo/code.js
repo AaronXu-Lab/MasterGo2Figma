@@ -40,6 +40,52 @@
     });
   };
 
+  // src/legacyWrapLayout.ts
+  function restoreLegacyWrapLayout(layers) {
+    let restored = 0;
+    for (const id of Object.keys(layers)) {
+      const record = layers[id];
+      const layout = record.props && record.props.layout;
+      if (!layout || layout.layoutMode !== "HORIZONTAL" || layout.layoutWrap !== void 0) continue;
+      const children = (record.childIds || []).map((id2) => layers[id2]);
+      if (children.some((child) => !child || !child.props)) continue;
+      const flow = children.filter((child) => {
+        var _a, _b;
+        return ((_a = child.props.scence) == null ? void 0 : _a.visible) !== false && ((_b = child.props.layout) == null ? void 0 : _b.layoutPositioning) !== "ABSOLUTE";
+      }).map((child) => child.props.layout);
+      if (flow.length < 3 || flow.some((box) => !box || ![box.x, box.y, box.width, box.height].every(Number.isFinite) || box.width <= 0 || box.height <= 0 || Math.abs(box.rotation || 0) > 0.01)) continue;
+      const tolerance = 0.1;
+      const first = flow[0];
+      let rowY = first.y;
+      let rowBottom = first.y + first.height;
+      let previousRight = first.x + first.width;
+      let rowCount = 1;
+      const gaps = [];
+      let valid = true;
+      for (const box of flow.slice(1)) {
+        if (Math.abs(box.y - rowY) <= tolerance && box.x >= previousRight - tolerance) {
+          rowBottom = Math.max(rowBottom, box.y + box.height);
+          previousRight = box.x + box.width;
+          rowCount++;
+        } else if (rowCount >= 2 && Math.abs(box.x - first.x) <= tolerance && box.y >= rowBottom - tolerance) {
+          gaps.push(Math.max(0, box.y - rowBottom));
+          rowY = box.y;
+          rowBottom = box.y + box.height;
+          previousRight = box.x + box.width;
+          rowCount = 1;
+        } else {
+          valid = false;
+          break;
+        }
+      }
+      if (!valid || !gaps.length || gaps.some((gap) => Math.abs(gap - gaps[0]) > tolerance)) continue;
+      layout.layoutWrap = "WRAP";
+      if (layout.counterAxisSpacing === void 0) layout.counterAxisSpacing = gaps[0];
+      restored++;
+    }
+    return restored;
+  }
+
   // src/state.ts
   var RestorerState = class {
     constructor() {
@@ -153,6 +199,15 @@
     })) return false;
     const paints = visible(fills);
     return paints.length === 1 && paints[0].type === "SOLID" && paints[0].opacity > 0 && paints[0].opacity < 1 && ((_a = paints[0].color) == null ? void 0 : _a.r) === 0 && ((_b = paints[0].color) == null ? void 0 : _b.g) === 0 && ((_c = paints[0].color) == null ? void 0 : _c.b) === 0;
+  }
+  function isDefaultMaskFill(paints) {
+    if (!Array.isArray(paints) || paints.length !== 1 || !paints[0]) return false;
+    const paint = paints[0];
+    const isDefaultGray = (color) => color && [color.r, color.g, color.b].every(
+      (value) => typeof value === "number" && Math.abs(value - 216 / 255) < 1e-3
+    );
+    if (paint.type === "SOLID") return !!isDefaultGray(paint.color);
+    return typeof paint.type === "string" && paint.type.startsWith("GRADIENT_") && Array.isArray(paint.gradientStops) && paint.gradientStops.length > 1 && paint.gradientStops.every((stop) => isDefaultGray(stop.color)) && paint.gradientStops.some((stop) => stop.color.a < 1);
   }
 
   // ../shared/layerRulesConfig.ts
@@ -322,12 +377,12 @@ ${style}`;
         state.activeRestoreStats.fontLoadRequestCount++;
       }
       const promise = figma.loadFontAsync(fontName).catch((error) => {
-        delete state.fontLoadPromises[key];
         if (state.activeRestoreStats) {
           state.activeRestoreStats.fontLoadFailureCount++;
         }
         throw error;
       });
+      promise.catch(() => void 0);
       state.fontLoadPromises[key] = promise;
       yield promise;
     });
@@ -1022,7 +1077,7 @@ ${style}`;
       if (state.deferredLayoutRestores.length === 0) return;
       const records = state.deferredLayoutRestores;
       state.deferredLayoutRestores = [];
-      const total = Math.max(1, records.length * 3);
+      const total = Math.max(1, records.length * 5);
       let done = 0;
       let lastYieldAt = Date.now();
       for (const record of records) {
@@ -1032,6 +1087,16 @@ ${style}`;
       }
       for (const record of records) {
         applyDeferredParentAutoLayout(record);
+        done++;
+        lastYieldAt = yield maybeYieldPostprocess(done, total, lastYieldAt, progress);
+      }
+      for (const record of records) {
+        finalizeDeferredAutoLayout(record);
+        done++;
+        lastYieldAt = yield maybeYieldPostprocess(done, total, lastYieldAt, progress);
+      }
+      for (const record of records) {
+        restoreAbsoluteStretchBox(record);
         done++;
         lastYieldAt = yield maybeYieldPostprocess(done, total, lastYieldAt, progress);
       }
@@ -1065,15 +1130,25 @@ ${style}`;
     if (value === "STRETCH" || value === "INHERIT") return value;
     return normalizeAxisAlign(value);
   }
+  function preserveAbsoluteAlignedBox(layout) {
+    if (layout.layoutPositioning !== "ABSOLUTE" || normalizeAxisAlign(layout.primaryAxisAlignItems) !== "MAX" || normalizeAxisSizingMode(layout.primaryAxisSizingMode) !== "AUTO") return layout;
+    return __spreadProps(__spreadValues({}, layout), { primaryAxisSizingMode: "FIXED" });
+  }
   function applyDeferredNodeAutoLayout(record) {
-    const { node, layout, isGroup } = record;
+    const { node, isGroup } = record;
+    const layout = preserveAbsoluteAlignedBox(record.layout);
     if (isRemovedNode(node) || isGroup || !("layoutMode" in node)) return;
     let applied = false;
     if (layout.layoutMode) {
       safeSet(node, "layoutMode", normalizeLayoutMode(layout.layoutMode));
       applied = true;
     }
+    for (const key of ["minWidth", "maxWidth", "minHeight", "maxHeight"]) {
+      if (layout[key] !== void 0 && key in node) safeSet(node, key, layout[key]);
+    }
     if (hasAutoLayout(node)) {
+      if (layout.layoutWrap !== void 0) safeSet(node, "layoutWrap", layout.layoutWrap);
+      if (layout.counterAxisSpacing !== void 0) safeSet(node, "counterAxisSpacing", layout.counterAxisSpacing);
       if (layout.primaryAxisSizingMode) {
         safeSet(node, "primaryAxisSizingMode", normalizeAxisSizingMode(layout.primaryAxisSizingMode));
         applied = true;
@@ -1162,7 +1237,7 @@ ${style}`;
   function finalizeDeferredAutoLayout(record) {
     const { node, isGroup } = record;
     if (isRemovedNode(node) || isGroup || !hasAutoLayout(node)) return;
-    const layout = normalizeDeferredLayoutForNativeGroupParent(node, record.layout);
+    const layout = preserveAbsoluteAlignedBox(normalizeDeferredLayoutForNativeGroupParent(node, record.layout));
     if (layout.width === void 0 || layout.height === void 0 || !shouldRestoreFixedSize(node, layout)) return;
     const mode = normalizeLayoutMode(layout.layoutMode || node.layoutMode);
     const primaryFixed = normalizeAxisSizingMode(layout.primaryAxisSizingMode || node.primaryAxisSizingMode) === "FIXED";
@@ -1179,6 +1254,24 @@ ${style}`;
       if (layout.x !== void 0) safeSet(node, "x", layout.x);
       if (layout.y !== void 0) safeSet(node, "y", layout.y);
     }
+  }
+  function absoluteStretchSize(layout, parentLayout, parent, constraints) {
+    if (layout.layoutPositioning !== "ABSOLUTE" || normalizeLayoutMode(layout.layoutMode) !== "NONE" || !parentLayout) return null;
+    const dimension = (axis, key) => {
+      if ((constraints == null ? void 0 : constraints[axis]) !== "STRETCH" || !Number.isFinite(layout[key]) || !Number.isFinite(parentLayout[key])) return null;
+      return Math.max(0.01, layout[key] + parent[key] - parentLayout[key]);
+    };
+    return { width: dimension("horizontal", "width"), height: dimension("vertical", "height") };
+  }
+  function restoreAbsoluteStretchBox(record) {
+    var _a, _b;
+    const { node, layout, isGroup } = record;
+    if (isRemovedNode(node) || isGroup || !("constraints" in node) || !node.parent) return;
+    const parent = node.parent;
+    const size = absoluteStretchSize(layout, state.restoredLayoutByNodeId[parent.id], parent, node.constraints);
+    if (!size || size.width === null && size.height === null) return;
+    safeResize(node, (_a = size.width) != null ? _a : node.width, (_b = size.height) != null ? _b : node.height);
+    if (hasFiniteRelativeTransform(layout)) safeSet(node, "relativeTransform", layout.relativeTransform);
   }
   function normalizeDeferredLayoutForNativeGroupParent(node, layout) {
     const parent = node.parent;
@@ -2551,15 +2644,18 @@ ${style}`;
     });
   }
   function applyOuterBooleanPaint(child, data) {
-    if (child.type !== "BOOLEAN_OPERATION") return;
+    if (!("fills" in child) || !("strokes" in child)) return;
     const geometry = data && data.geometry;
     const outerFills = geometry && geometry.fills;
-    if (!Array.isArray(outerFills) || !outerFills.some((f) => f && f.visible !== false)) return;
-    safeSetFills(child, normalizeImageFills(outerFills, child, data.layout));
+    if (!geometry) return;
+    if (Array.isArray(outerFills) && outerFills.some((f) => f && f.visible !== false)) {
+      safeSetFills(child, normalizeImageFills(outerFills, child, data.layout));
+    }
     const outerStrokes = geometry.strokes;
     if (Array.isArray(outerStrokes) && outerStrokes.length > 0) {
       safeSetStrokes(child, normalizeImageStrokes(outerStrokes, child, data.layout));
       if (geometry.strokeWeight !== void 0) safeSet(child, "strokeWeight", geometry.strokeWeight);
+      if (geometry.strokeAlign !== void 0) safeSet(child, "strokeAlign", geometry.strokeAlign);
     }
   }
   function composeSingleBooleanChildTransform(shell, child, data) {
@@ -2701,6 +2797,7 @@ ${style}`;
   }
   function refreshMissingFontsInDocument() {
     return __async(this, null, function* () {
+      state.fontLoadPromises = {};
       try {
         yield ensureLayerRulesLoaded();
         if (!hasValidLayerRules()) throw new Error("\u8BF7\u5148\u5BFC\u5165\u6709\u6548\u7684\u56FE\u5C42\u8F6C\u6362\u89C4\u5219 JSON");
@@ -2781,6 +2878,7 @@ ${style}`;
       if (totalNodes <= 0 || totalPages <= 0) throw new Error("\u6240\u9009\u9875\u9762\u6CA1\u6709\u53EF\u8FD8\u539F\u7684\u56FE\u5C42");
       state.importInProgress = true;
       state.reset();
+      state.fontLoadPromises = {};
       state.resetRestoreRuntimeStats(totalNodes, totalPages);
       clearPendingImportAssets();
       clearPendingImportPages();
@@ -3057,6 +3155,7 @@ ${style}`;
       if (importPage.layerCount !== void 0 && pageNodeCount !== Number(importPage.layerCount)) {
         throw new Error(`\u9875\u9762\u8BB0\u5F55\u6570\u91CF\u4E0D\u4E00\u81F4\uFF1Aexpected=${importPage.layerCount}, actual=${pageNodeCount}`);
       }
+      restoreLegacyWrapLayout(layers);
       const postprocessStart = session.postProcessedNodes;
       figma.ui.postMessage({
         type: "progress",
@@ -3487,7 +3586,7 @@ ${style}`;
       if (!layerRecord || !layerRecord.props) {
         throw new Error(`\u7F3A\u5C11\u56FE\u5C42\u8BB0\u5F55\uFF1A${nodeId}`);
       }
-      if (layerRecord.mainComponentId) {
+      if (layerRecord.mainComponentId && !layerRecord.instanceStructureFallback) {
         const instanceRestored = yield tryRestoreAsInstance(layerRecord, parent, layers, restoredBefore, totalNodes);
         if (instanceRestored > 0) return instanceRestored;
       }
@@ -3556,7 +3655,7 @@ ${style}`;
       }
       if (activeImportSession) {
         activeImportSession.restoredNodeById[nodeId] = newNode;
-        if (layerRecord.mainComponentId) {
+        if (layerRecord.mainComponentId && !layerRecord.instanceStructureFallback) {
           activeImportSession.deferredInstanceRelinks.push({ id: nodeId, node: newNode });
         }
       }
@@ -3647,7 +3746,7 @@ ${style}`;
         const overrideLayers = entry.layers || layers;
         const layerRecord = overrideLayers[entry.id];
         const shell = entry.node;
-        if (!layerRecord || !layerRecord.mainComponentId || !shell || shell.removed) continue;
+        if (!layerRecord || !layerRecord.mainComponentId || layerRecord.instanceStructureFallback || !shell || shell.removed) continue;
         const componentNode = session.restoredNodeById[layerRecord.mainComponentId];
         if (!componentNode || componentNode.removed || componentNode.type !== "COMPONENT") {
           if (!entry.layers) {
@@ -3735,7 +3834,6 @@ ${style}`;
   function paintFilledMaskTwins(session) {
     let added = 0;
     const hasVisiblePaint = (paints) => Array.isArray(paints) && paints.some((paint) => paint && paint.visible !== false && (paint.opacity === void 0 || paint.opacity > 0));
-    const isDefaultMaskFill = (paints) => Array.isArray(paints) && paints.length === 1 && paints[0] && paints[0].type === "SOLID" && paints[0].color && Math.abs(paints[0].color.r - 216 / 255) < 1e-3 && Math.abs(paints[0].color.g - 216 / 255) < 1e-3 && Math.abs(paints[0].color.b - 216 / 255) < 1e-3;
     const visit = (node) => {
       if (node.type === "INSTANCE") return;
       if ("children" in node) for (const child of [...node.children]) visit(child);
@@ -3852,26 +3950,40 @@ ${style}`;
           } catch (error) {
           }
         }
-        if (props.layout && "layoutMode" in node && INSTANCE_LAYOUT_OVERRIDE_KEYS.some((key) => typeof props.layout[key] === "number")) {
+        if (props.layout && ("layoutMode" in node && INSTANCE_LAYOUT_OVERRIDE_KEYS.some((key) => typeof props.layout[key] === "number") || typeof props.layout.layoutGrow === "number" || typeof props.layout.layoutAlign === "string" || typeof props.layout.layoutPositioning === "string")) {
           pendingInstanceLayoutOverrides.push({ node, layout: props.layout });
         }
       }
     });
   }
   var pendingInstanceLayoutOverrides = [];
-  var INSTANCE_LAYOUT_OVERRIDE_KEYS = ["itemSpacing", "paddingLeft", "paddingRight", "paddingTop", "paddingBottom"];
+  var INSTANCE_LAYOUT_OVERRIDE_KEYS = ["minWidth", "maxWidth", "minHeight", "maxHeight", "itemSpacing", "paddingLeft", "paddingRight", "paddingTop", "paddingBottom"];
   function flushInstanceChildLayoutOverrides(final) {
     let applied = 0, deferred = 0, rejected = 0;
     const keep = [];
     for (const entry of pendingInstanceLayoutOverrides) {
       const node = entry.node;
       if (!node || node.removed) continue;
-      if (node.layoutMode === "NONE" || node.layoutMode === void 0) {
-        keep.push(entry);
+      keep.push(entry);
+      const parent = node.parent;
+      if (parent && parent.layoutMode && parent.layoutMode !== "NONE") {
+        for (const key of ["layoutPositioning", "layoutGrow", "layoutAlign"]) {
+          const want = entry.layout[key];
+          if (want === void 0 || want === null || node[key] === want) continue;
+          try {
+            node[key] = want;
+            if (node[key] === want) applied++;
+            else rejected++;
+          } catch (error) {
+            rejected++;
+            console.warn("[mg-instance] child layout override rejected:", node.name, key, error);
+          }
+        }
+      }
+      if (!("layoutMode" in node) || node.layoutMode === "NONE" || node.layoutMode === void 0) {
         deferred++;
         continue;
       }
-      keep.push(entry);
       for (const key of INSTANCE_LAYOUT_OVERRIDE_KEYS) {
         const want = entry.layout[key];
         if (typeof want !== "number" || !isFinite(want)) continue;

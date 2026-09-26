@@ -67,13 +67,20 @@ export async function loadFontCached(fontName: FontName): Promise<void> {
     if (state.activeRestoreStats) {
         state.activeRestoreStats.fontLoadRequestCount++;
     }
+    // Failures stay cached for the session: a font Figma cannot load now will
+    // not load on the next text either, and re-asking costs a full font-catalog
+    // miss each time. With every PingFang segment missing, 0920's 752 instance
+    // texts re-tried the same rejected fonts until the page-end timeout fired.
+    // 刷新字体 / a new session resets the cache via state.reset().
     const promise = figma.loadFontAsync(fontName).catch(error => {
-        delete state.fontLoadPromises[key];
         if (state.activeRestoreStats) {
             state.activeRestoreStats.fontLoadFailureCount++;
         }
         throw error;
     });
+    // Keep a handled reference so a cached rejection never surfaces as an
+    // unhandled promise rejection when nobody awaits it again.
+    promise.catch(() => undefined);
     state.fontLoadPromises[key] = promise;
     await promise;
 }

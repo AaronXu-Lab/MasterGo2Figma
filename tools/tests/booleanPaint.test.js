@@ -15,13 +15,23 @@ const apply = new Function('safeSetFills', 'normalizeImageFills', 'safeSetStroke
 const solid = value => ({type: 'SOLID', color: {r: value, g: value, b: value}});
 
 test('promoted 0915 ellipsis retains the dark outer boolean fill over the gray inner fill', () => {
-  const child = {type: 'BOOLEAN_OPERATION', fills: [solid(216 / 255)]};
+  const child = {type: 'BOOLEAN_OPERATION', strokes: [], fills: [solid(216 / 255)]};
   apply(child, {geometry: {fills: [solid(0.2)]}});
   assert.deepEqual(child.fills, [solid(0.2)]);
 });
 
 test('promotion keeps child paint when no visible outer paint is available', () => {
-  const child = {type: 'BOOLEAN_OPERATION', fills: [solid(0.2)]};
+  const child = {type: 'BOOLEAN_OPERATION', strokes: [], fills: [solid(0.2)]};
   apply(child, {geometry: {fills: [{...solid(1), visible: false}]}});
   assert.deepEqual(child.fills, [solid(0.2)]);
+});
+
+
+test('promoted rectangle retains a stroke-only outer boolean outline', () => {
+  const child = {type:'RECTANGLE', fills:[], strokes:[solid(0.8)], strokeWeight:0};
+  apply(child, {geometry:{fills:[], strokes:[solid(0.2)], strokeWeight:1.2, strokeAlign:'CENTER'}});
+  assert.deepEqual(child.fills, []);
+  assert.deepEqual(child.strokes, [solid(0.2)]);
+  assert.equal(child.strokeWeight, 1.2);
+  assert.equal(child.strokeAlign, 'CENTER');
 });

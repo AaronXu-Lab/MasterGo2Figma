@@ -1,7 +1,74 @@
 # MG / ZIP 导入一致性状态
 
-最后更新：2026-08-26（临时测试集：字体样式表正则、矩形逐角圆角、paint blendMode、导出设置注册表、
-嵌套实例 override 坐标系；importer 侧修掉「外层 boolean 填充丢失」与「默认灰蒙版孪生」）
+最后更新：2026-09-19（测试集 0920「测试b端」：stub 之下的 typed bare 子记录、paint `09` 非 opacity、
+paint `0e/0f`、变量别名表、trailer `1f`=STRETCH / `30` 属性绑定表 / `28 29 32 33`、嵌套实例 tag 26、
+任意深度 override、渐变空 stop；importer 回放实例子层 layoutGrow/layoutAlign）
+
+## 2026-09-19 续修：旧包自动布局换行
+
+Figma 当前取证页：`20:5522`（mg）、`1:3943`（zip）、`1:6963`（image）。
+首屏侧栏菜单横向溢出、筛选首行被挤出画板，mg/zip 同错；原始记录的孩子坐标仍保留完整多行。
+
+根因：发送端未序列化 MasterGo `autoLayout.flexWrap/crossAxisSpacing`，接收端也未应用
+Figma `layoutWrap/counterAxisSpacing`。原生 MG 输出同样尚无这两个字段，不能靠 props 比较发现共同缺口。
+
+修复：新 zip 保留换行/行距（兼容直接属性与嵌套 AutoLayout）；接收端在逐页创建前，对未携带
+显式 `layoutWrap` 的旧记录按完整孩子坐标恢复换行。只接受水平有序、至少两项后回到行首、
+行间不重叠且行距一致的布局；忽略隐藏/绝对定位孩子，拒绝不完整、旋转、单列与普通横向溢出。
+延迟布局阶段先应用换行/行距，再应用尺寸。未修改二进制解码规则。
+
+| 本次指标 | 修复前 | 修复后 |
+|---|---:|---:|
+| 0920 mg 画布 WRAP 容器 | 0 | 29 |
+| 0920 首屏可见筛选输入项 | 2 | 5 |
+| 0920 mg/zip 旧包规则命中 | — | 29 / 29 |
+| 0806 mg/zip 旧包规则命中 | — | 0 / 0 |
+| 0920 deep-prop / missing | 1429 / 0 | 1429 / 0 |
+| 0806 deep-prop / missing | 1280 / 0 | 1280 / 0 |
+
+验证：两端构建成功，Node 测试 84/84；在现有 mg 页按同一恢复结果应用 29 个容器并截图核验
+三个画板。未做完整插件重导入验证；zip/image 页保持原基准。此轮没有修改 decoder，结构比较
+数字不变是预期。0806 本机实测记录 1631 / 1127、Extra 504，不沿用历史 Extra 242。
+
+仍有残差：首屏表单标签实例的宽度/对齐覆盖（如 `标题label` 当前宽 80、zip 期望 113）导致
+标签偏左；图像滤镜、mode 颜色和其他既有结构残差仍未修复。本轮不声称逐像素一致。
+现有 mg 对比页已就地应用换行补丁；其他文档需要用新构建重导入，刷新字体不能修复布局。
+
+## 2026-09-19 测试集「测试集 0920 / 测试b端」（当前主回归集）
+
+```bash
+node tools/compare_mg_import.js "测试集/测试集 0920/测试b端-20260919-182243.mg" \
+  "测试集/测试集 0920/测试b端-20260919-182243.zip"
+```
+
+| 指标 | 修复前 | 修复后 |
+|---|---|---|
+| deep-prop | 15948 | **1429** |
+| paint | 1355 | **4**（3 条图像滤镜字段映射 + 1 条 mode 颜色） |
+| Extra | 1779 | **1100**（96 个外部库 master + 其 1004 条子树，预期） |
+| index / child-order | 124 / 41 | **0 / 0** |
+| text / font | 3 / 3 | **0** / 3（`PingFangSC` vs `PingFang SC` 拼写） |
+| geometry / transform | 169 / 53 | 166 / 53（实例 FILL 宽度由 Figma 自解） |
+
+规格见 `MG_DECODER.md`「2026-09-19」节，过程见 `MG_DECODER_JOURNAL.md` 同日。
+渲染验证：`列表` 画板 `首页` 文字最深像素 image=(29,33,41)=zip，修复前 mg=(57,60,67)；
+`功能` tab 文字 image/zip=(41,204,204)，修复前 mg 无填充；日期框描边 image/zip=(224,224,224)，
+修复前 mg=(251,251,251)。
+
+剩余 1429 行 deep：`regions[].loops` 顺序 380（渲染等价）、实例 FILL 宽度/x/transform 234、
+VECTOR 顶点 cornerRadius 194 + 节点级 -1 哨兵 153、SVG fallback 128、strokeWeight 26（仅 2 条有
+可见描边）、实例名 23、其余零散。
+
+**需要重导入**：本轮全部是解码器/importer 变更，现有 `_mg` 页无法就地刷新。
+
+首次重导入在页面收尾阶段超时（285 s，节点已全部建好、库 master 未清理）。根因是导入端
+性能：实例子层 override 现在能对齐 633 个实例，`applyInstanceTextFormatting` 对每个文字都
+重试加载缺失字体，而 `loadFontCached` 在失败时删除缓存条目——752 个实例文字 × 多个缺失的
+PingFang 字面 = 数百次全字库 miss。修复：失败结果在会话内缓存（会话开始与「刷新字体」时清空）。
+
+0806 汇总集同步受益：deep 1323 → 1280、paint 7 → 5、0 新增行，Extra id 集合不变。
+`测试集/临时测试` 对在本机已不存在，本轮未跑。
+
 
 ## 2026-08-26 测试集「临时测试」（当前主回归集）
 
@@ -701,3 +768,102 @@ It now uses the documented group-like discriminator `01 00` followed by Boolean
 kind `02 01`. A separate test distinguishes FRAME, GROUP and BOOLEAN_OPERATION
 and checks missing padding for all three, plus FRAME clipping preservation.
 Decoder behavior is unchanged. All 80 Node tests pass.
+
+## 2026-09-19 · 0920 second-pass fixes, live validation incomplete
+
+The user's reimport (`24:9467`, file `qlPpuWdcVGguMjYMPtmOmk`) confirms wrap
+restoration, but `_image` comparison still shows missing chart plots and shifted
+form labels. Structural instance fallback now preserves incompatible subtrees as
+editable frames (15 records), and absolute MAX/AUTO label boxes retain their
+source primary-axis size. Both builds pass; 87/87 Node tests pass. Full compare
+residuals remain 0920: deep 1429, geometry 166, transform 53, font 3, paint 4;
+0806: deep 1280, geometry 182, transform 108, font 90, paint 5.
+
+A real desktop-plugin import was attempted with the rebuilt bundle, but progress
+stalled at 532/4011. CUA subsequently repeatedly returned `elementHasNoFrame`;
+MCP confirmed the new page contained only 32 temporary component roots, without
+business artboards. That incomplete verification page was removed. Existing four
+comparison pages were preserved. These changes are NOT yet visually verified by
+a completed reimport. Remaining reported differences include dropdown icon,
+button sizing and background appearance; passing offline checks is not evidence
+of visual parity.
+
+
+## 2026-09-19 · 0920 chart overlay follow-up, reimport pending
+
+Latest user page: 26:13956 (`页面 1_mg 3`); target 26:17514. Bars now exist,
+but the plotting layer participated in auto-layout instead of overlaying the
+axes. Nested trailer 2e inheritance plus UI/instance positioning replay fixes
+six decoded discrepancies. 0920 deep 1429 → 1423; all other named counts remain
+unchanged, missing records 0. 0806 deep 1280 and digest ae09e124 unchanged.
+88/88 tests and both plugin builds pass. Full reimport was not completed:
+desktop automation could not open an interactive plugin panel. Plot width and
+legend height still require screenshot validation against `_image`/`_zip`.
+The user's existing comparison pages were not edited.
+
+### 2026-09-19 — 0920 visual follow-up (offline verified; canvas pending)
+
+| Fixture | Missing | Extra | Geometry | Transform | Font | Paint | Deep props |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0920 before this follow-up | 0 | 1100 | 166 | 53 | 3 | 4 | 1423 |
+| 0920 after this follow-up | 0 | 1100 | 166 | 53 | 3 | 1 | 1612 |
+| 0806 before this follow-up | 0 | 504 | 182 | 108 | 90 | 5 | 1280 |
+| 0806 after this follow-up | 0 | 504 | 182 | 108 | 90 | 5 | 1272 |
+
+0920 now carries 215 native `layout.minWidth` values missing from the historical
+ZIP. Excluding only that new field, deep differences decreased to 1397 (26 fewer).
+The raw deep total remains reported above. Seven changed line-height records
+match ZIP; no changed line-height record regressed. The remaining paint mismatch
+and other historical residuals are not declared resolved by this change.
+Desktop reimport and `_image` visual acceptance are pending.
+
+Validation: 92/92 Node tests pass; both plugin builds pass; `git diff --check`
+passes. Added focused regressions for computed AUTO line height with a missing
+font hash, all eight image adjustment slots, minimum-width decoding/slim
+transport, and stroke-only single-child boolean promotion. The desktop plugin
+shell opens but its iframe content is unavailable to automation; real import
+remains blocked pending restoration of the interactive Figma window.
+
+### 2026-09-19 — final desktop validation of the reported 0920 issues
+
+The previous canvas-pending status is superseded by three successful real desktop
+plugin imports (each reported 1 page / 2911 layers). Final result:
+`页面 1_mg 7`, page `35:34208`, roots `35:35318` (list), `35:36157` (form),
+`35:37029` (detail), in file `qlPpuWdcVGguMjYMPtmOmk`.
+Intermediate pages from this run were removed; existing user comparison pages
+remain intact. No canvas patches were applied to the final imported result.
+
+Confirmed against all three `_image` screens:
+
+- Filter/list/form action buttons are 74px wide; form footer also matches.
+- Sidebar 经营 outline is present; sidebar wrapping and form label alignment hold.
+- Legend text is AUTO / 17px, rather than 10px.
+- Curve plot is 516 × 362 with its source aspect; bars meet the zero baseline.
+  Both colored curve bounds and bar bounds match the image screenshot exactly
+  at integer-pixel bounds. Restoring the plot must be followed by restoring its
+  inner fixed auto-layout sizes, otherwise bar rows move up 16px.
+- Gray gradient mask-fill twins are absent, restoring the pale header.
+- The 进行中 text uses the default collection mode's cyan.
+
+Final offline counts: 0920 paint mismatches **0**, deep props **1609** (including
+215 minWidth fields absent from old ZIP; other-field total 1394), missing **0**.
+0806 remains deep **1272**, paint **5**, missing **0**, digest **8b7edd52**.
+**95/95 tests pass**, both plugin builds pass, `git diff --check` passes.
+
+Pixel-equivalence is not claimed: header RGB samples still differ by 2–4 levels
+(maximum 6 in the sampled header region), and text/vector edge rasterization
+varies between the two renderers. The header sample region mean absolute RGB
+error is (2.678, 0.251, 0.981)/255; chart region is (1.254, 0.659, 0.445)/255.
+These small rendering residuals are distinct from the fixed mask overpaint,
+missing outlines, geometry changes, or wrong token color. Historical structural
+residuals remain tracked above; this pass does not declare global decoder parity.
+
+Local visual evidence from this run is in `/tmp/mg-visual-final/`: `compare-0.png`
+(list), `compare-1.png` (form), `compare-2.png` (detail), reference left / import
+right. The durable comparison is the final Figma page linked above.
+
+### 2026-09-19 标签对齐补充
+
+完整实例 stub 的 transform 省略零轴修复后，本次运行：0920 geometry=157、transform=44、deep props=1591；0806 geometry=180、transform=106、deep props=1268。两套 missing/type/parent/index/child-order 均为 0，其他指标未变。96 项测试及两端构建通过。历史残差仍存在，不表示全量属性完全一致。
+
+实际插件重新导入成功：`页面 1_mg 8`（35:38256），目标标签 `35:40709` 与单选项容器均 y=0、height=22；已截图并与 `_image` 原图核对，5 px 上移消失。

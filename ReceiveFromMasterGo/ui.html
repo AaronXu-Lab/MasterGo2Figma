@@ -735,11 +735,8 @@
     // 4=TILE observed on the 0712-3 specimen (round-tripped from Figma); the
     // legacy 2=TILE mapping is kept for the older fixtures.
     const MG_IMAGE_SCALE_MODE = { 0: "FILL", 1: "FIT", 2: "TILE", 3: "CROP", 4: "TILE" };
-    // Image-adjustment fields inside the paint's `0d` object. The numbering is
-    // a BIT MASK, not a counter (1/2/4/8 …), so the unobserved Figma filters
-    // — temperature, tint, highlights, shadows — are the higher bits; reading
-    // an unmapped one as a float and ignoring it stays forward-compatible.
-    const MG_IMAGE_FILTER_FIELDS = { 1: "contrast", 2: "exposure", 4: "saturation", 8: "hue" };
+    // Sequential adjustment slots, cross-checked against the 0920 ZIP.
+    const MG_IMAGE_FILTER_FIELDS = { 1: "contrast", 2: "exposure", 3: "highlights", 4: "saturation", 5: "shadows", 6: "temperature", 7: "tint", 8: "hue" };
     // MasterGo's default #D8D8D8 fill: referenced by "default fill" paint
     // records that carry no explicit color of their own.
     const MG_DEFAULT_FILL_GRAY = Math.fround(216 / 255);
@@ -800,7 +797,11 @@
                 if (st === 0x02) { col = { a: zfloat(), r: zfloat(), g: zfloat(), b: zfloat() }; continue; }
                 return null;
               }
-              if (col) stops.push({ position: pos, color: col });
+              // An EMPTY stop record (`00` right after the count, 0920 card
+              // hover gradient) is the all-defaults stop: position 0, color =
+              // MasterGo's default fill gray at full alpha. Dropping it left
+              // one stop and the whole gradient degraded to the gray default.
+              stops.push({ position: pos, color: col || { a: 1, r: MG_DEFAULT_FILL_GRAY, g: MG_DEFAULT_FILL_GRAY, b: MG_DEFAULT_FILL_GRAY } });
             }
             g.stops = stops;
             continue;
@@ -910,8 +911,7 @@
             const st = bytes[p++];
             if (st === 0x00) break;
             // Full editor records include all eight scalar controls, even
-            // on SOLID paints. Consume known slots without guessing names
-            // for the controls whose meaning has not been established.
+            // on SOLID paints; these are sequential slots, not a bitmask.
             if (st < 1 || st > 8) return null;
             const value = zfloat();
             const name = MG_IMAGE_FILTER_FIELDS[st];
@@ -919,6 +919,13 @@
           }
           continue;
         }
+        // 0920 full-editor paints: `0e <b>` (78 records, always `0e 02`)
+        // and `0f <variable id>\0` (a paint aliasing a library variable —
+        // color-Primary → `7545:209015`) trail the `0d` object. Rejecting
+        // them dropped the whole paint: every brand-primary text/icon on the
+        // page imported with fills=[] (138 nodes).
+        if (t === 0x0e) { p++; continue; }
+        if (t === 0x0f) { while (p < end && bytes[p] !== 0x00) p++; p++; continue; }
         return null; // unknown tag: not a paint record
       }
 
@@ -990,7 +997,12 @@
         // older exports can duplicate the same opacity in both fields.
         const paint = mgMakeSolidPaint(color.r, color.g, color.b, color.a);
         paint.visible = visible;
-        if (opacity !== null && opacity !== 1) paint.opacity = opacity;
+        // 0920 cross-tab (1350 SOLID paints vs the API zip + MasterGo's own
+        // PNG): whenever `08` carries a color, its alpha IS the opacity and
+        // `09` is NOT — variable/style paints write `09 0.88/0.45/0.25/0.06`
+        // beside an `08` alpha of 1 (colorTextHeading: 08 a=0.44, 09 0.88;
+        // render + API both say 0.44). Letting a non-1 `09` win flattened
+        // every token-colored text/stroke on the page to 88%/45%/25%.
         return finishPaint(paint);
       }
       // Paint-shaped record with no color/kind at all: MasterGo's default fill.
@@ -1023,6 +1035,34 @@
       for (const ref in paints) {
         paints[ref].sort((a, b) => (a.code < b.code ? -1 : a.code > b.code ? 1 : 0));
         paints[ref] = paints[ref].map(entry => entry.paint);
+      }
+      // Variable ALIASES (0920): a color variable can hold no paint of its
+      // own and point at another variable instead. The link lives in the
+      // id-relation table, one row per mode:
+      //   `01 <A>/<mode> 00 02 <B> 00 04 01 05 <A>/<mode>:0:0 00 06 02 00`
+      // (color-error 3:06851 → .red-6 3:06852 in all three modes). Without
+      // it every `*` required mark, Tag background and status text bound to
+      // an aliased token imported with fills=[] (55 nodes).
+      // Mode definitions carry a stable sort code. Alias rows are stored in
+      // arbitrary record order; choose the collection's first declared mode,
+      // not whichever row happens to precede it in the binary (0920 color-info).
+      const modeOrder = {};
+      const modeRe = /\x01([A-Za-z0-9]+:[A-Za-z0-9]+)\x00\x02([ab][^\x00]*)\x00\x03[^\x00]+\x00\x04\x01\x00/g;
+      while ((m = modeRe.exec(str))) modeOrder[m[1]] = m[2];
+      const aliasRe = new RegExp("\\x01(" + ID + ")\\/([^\\x00]+)\\x00\\x02(" + ID + ")\\x00\\x04\\x01\\x05", "g");
+      const alias = {}, aliasOrder = {};
+      while ((m = aliasRe.exec(str))) {
+        const order = modeOrder[m[2]] || "\uffff";
+        if (!alias[m[1]] || order < aliasOrder[m[1]]) {
+          alias[m[1]] = m[3];
+          aliasOrder[m[1]] = order;
+        }
+      }
+      for (const a in alias) {
+        if (paints[a] && paints[a].length) continue;
+        let b = alias[a], hops = 0;
+        while (b && !(paints[b] && paints[b].length) && hops++ < 8) b = alias[b];
+        if (b && paints[b] && paints[b].length) paints[a] = paints[b];
       }
       return paints;
     }
@@ -1595,10 +1635,41 @@
         while (p < end) {
           const t = bytes[p];
           if (t === 0x00) return fields;
-          if (t === 0x23 || t === 0x2a) {
+          // String fields: 23 sort code, 2a token JSON, 28/33 id refs,
+          // 29 JSON (0920 full-editor trailers).
+          if (t === 0x23 || t === 0x2a || t === 0x28 || t === 0x29 || t === 0x33) {
             p++;
             while (p < end && bytes[p] !== 0x00) p++;
             p++;
+            continue;
+          }
+          // 30 <n> { 01 <component-property ref> 00 02 <kind> } × n — the
+          // property-binding list ("Icon#513,53" ↔ "5939:437272"). 0920: 1735
+          // trailers carry it; the generic 2-byte skip landed inside the
+          // string and threw the WHOLE trailer away (tag 26 scale, 1f
+          // stretch, 20 grow all lost on those records).
+          if (t === 0x30) {
+            const count = bytes[p + 1];
+            p += 2;
+            for (let i = 0; i < count; i++) {
+              let closed = false;
+              while (p < end) {
+                const st = bytes[p++];
+                if (st === 0x00) { closed = true; break; }
+                if (st === 0x01) { while (p < end && bytes[p] !== 0x00) p++; p++; continue; }
+                if (st === 0x02) { p++; continue; }
+                return null;
+              }
+              if (!closed) return null;
+            }
+            continue;
+          }
+          // 32 <zero-compressed float> (0920: 29 records, e.g. 32 86 00 00 cc).
+          if (t === 0x32) {
+            const r = mgReadZeroFloat(bytes, p + 1);
+            if (!isFinite(r.value)) return null;
+            fields.minWidth = r.value;
+            p = r.next;
             continue;
           }
           if (t === 0x25) {
@@ -1663,6 +1734,12 @@
           }
           if (t >= 0x1e && t <= 0x3f) {
             if (t === 0x1e) fields.t1e = bytes[p + 1];
+            // 1f 01 = layoutAlign STRETCH (child stretches along the parent's
+            // counter axis). 0920 cross-tab against the API zip over every
+            // raw record: 273/273 STRETCH rows carry `1f 01`, 0/976 INHERIT
+            // rows do. Closes the "34 STRETCH rows, source byte unknown"
+            // residual in MG_DECODER_UNKNOWN_FIELDS.md.
+            if (t === 0x1f) fields.stretch = bytes[p + 1] === 1;
             if (t === 0x2f) fields.t2f = bytes[p + 1];
             if (t === 0x36) fields.t36 = bytes[p + 1];
             if (t === 0x2c) fields.strokeCap = bytes[p + 1];
@@ -2246,8 +2323,9 @@
             const c = mgReadCString(bytes, p + 1, Math.min(bytes.length, p + 40));
             // 临时测试 spells a MISSING hash as the sentinel "EMPTYHASHFFFFFFF"
             // — consume it (breaking here hid the field-12 styleName behind
-            // it) but only real hex marks a computed entry.
+            // it). The field itself marks a computed entry, even without a font.
             if (!c || !/^[0-9A-Za-z]{8,32}$/.test(c.text)) break;
+            entry.hasFontFileHashField = true;
             if (/^[0-9A-F]{16,32}$/i.test(c.text)) entry.fontFileHash = c.text;
             p = c.end + 1;
             continue;
@@ -2965,6 +3043,26 @@
       mgApplyCommonVisualDefaults(props);
     }
 
+    // Trailer field lookup for instance-child stubs: a stub whose own trailer
+    // omits `20` (layoutGrow) / `1f` (stretch) inherits the template child's
+    // (0920 cross-tab over 216 raw slash overrides: stubs never spell either
+    // tag themselves; 209/216 grow rows and 5/5 stretch rows follow the
+    // template). Walk slot links only while the id is still a stub — an
+    // INSTANCE record's own `1a` points at its COMPONENT, whose trailer
+    // describes the component's slot in ITS parent, not this child's.
+    function mgStubTrailerField(n, nodes, field) {
+      let cur = n, hops = 0;
+      while (cur && hops++ < 8) {
+        if (cur.trailer && cur.trailer[field] !== undefined) return cur.trailer[field];
+        if (!cur.id || cur.id.indexOf("/") < 0) return undefined;
+        const next = (cur.templateNode && nodes[cur.templateNode]) ||
+          (cur.templateRef && nodes[cur.templateRef]) || null;
+        if (!next || next === cur) return undefined;
+        cur = next;
+      }
+      return undefined;
+    }
+
     // Scale a decoded vectorNetwork's coordinates (per-axis: instances can be
     // resized non-uniformly).
     function mgScaleVectorNetwork(vn, sx, sy) {
@@ -3168,10 +3266,31 @@
           layoutAlign: "INHERIT", layoutGrow: 0, layoutPositioning: "AUTO"
         }
       };
+      const minWidth = trailer.minWidth !== undefined ? trailer.minWidth : inheritedTrailer.minWidth;
+      if (typeof minWidth === "number" && minWidth >= 0) props.layout.minWidth = minWidth * scale;
       // Trailer `2e 01` = the node ignores its auto-layout parent (own-record
-      // flag only; instance mirrors inherit it through the cloned template
-      // record's trailer).
-      if (trailer.absolute) props.layout.layoutPositioning = "ABSOLUTE";
+      // first; sparse nested instance records inherit the template slot).
+      const absolute = trailer.absolute !== undefined ? trailer.absolute
+        : mgStubTrailerField(n, nodes, "absolute");
+      if (absolute) props.layout.layoutPositioning = "ABSOLUTE";
+      // Trailer `1f 01` = layoutAlign STRETCH (0920 cross-tab: 273/273 vs
+      // 0/976). Own trailer first; synthesized instance children borrow the
+      // template's, same as layoutGrow.
+      // Trailer `20 <float>` = layoutGrow ("fill container" along the
+      // parent's primary axis). Cross-tabbed on the 0806 fixture: 7/7 present
+      // ⇒ grow 1, 439/439 absent ⇒ grow 0. Applies to EVERY node type (0920:
+      // 238 frames + 20 rectangles + 240 instance-child texts carry it) — it
+      // used to sit inside the container-meta block, so texts never got it.
+      // A stub whose own trailer omits `20` / `1f` inherits the template
+      // child's (0920 cross-tab over 216 raw slash overrides: stubs never
+      // spell either tag; 209/216 grow rows follow the template, the rest sit
+      // under non-auto-layout parents).
+      const growValue = trailer.layoutGrow !== undefined ? trailer.layoutGrow
+        : (n.id && n.id.indexOf("/") >= 0 ? mgStubTrailerField(n, nodes, "layoutGrow") : inheritedTrailer.layoutGrow);
+      if (t !== "SECTION" && growValue) props.layout.layoutGrow = growValue;
+      const stretchValue = trailer.stretch !== undefined ? trailer.stretch
+        : (n.id && n.id.indexOf("/") >= 0 ? mgStubTrailerField(n, nodes, "stretch") : inheritedTrailer.stretch);
+      if (stretchValue && t !== "SECTION") props.layout.layoutAlign = "STRETCH";
       if (t === "CONNECTOR" && n.connector) Object.assign(props, mgConnectorProps(n.connector));
       if (t === "TEXT") {
         props.characters = n.characters || n.name || "";
@@ -3204,7 +3323,7 @@
           // per-node COMPUTED entry (0711-3, marked by the font-file hash)
           // stores the RESOLVED line box even for AUTO text; there the `06 01`
           // PIXELS flag is the only trustworthy unit signal.
-          const computedEntry = !mgShareModeActive && !!style.fontFileHash;
+          const computedEntry = !mgShareModeActive && !!style.hasFontFileHashField;
           props.lineHeight = mgLineHeightFromStyleEntry(style, styleScale, computedEntry);
         } else {
           props.fontSize = mgGuessTextFontSize(n) * scale;
@@ -3330,10 +3449,6 @@
         // Trailer `20 <float>` = layoutGrow ("fill container" along the
         // parent's primary axis). Cross-tabbed on the 0806 fixture: 7/7
         // present ⇒ grow 1, 439/439 absent ⇒ grow 0.
-        const growTrailer = n.trailer ? trailer : inheritedTrailer;
-        if (types.type !== "SECTION" && growTrailer && growTrailer.layoutGrow) {
-          props.layout.layoutGrow = growTrailer.layoutGrow;
-        }
         if (types.type !== "SECTION" && types.sourceType !== "INSTANCE") props.__nativeContainerLayout = true;
       }
       if (geomVn) {
@@ -3402,7 +3517,7 @@
                 ? mgLetterSpacingFromStyleEntry(entry, 1)
                 : mgCloneJsonValue(props.letterSpacing || { value: 0, unit: "PERCENT" }),
               lineHeight: entry
-                ? mgLineHeightFromStyleEntry(entry, 1, !mgShareModeActive && !!entry.fontFileHash)
+                ? mgLineHeightFromStyleEntry(entry, 1, !mgShareModeActive && !!entry.hasFontFileHashField)
                 : mgCloneJsonValue(props.lineHeight),
               fills: segFills
             });
@@ -3629,8 +3744,13 @@
       }
       // Remember the template's natural size: vectorNetwork/text scaling uses
       // the actual-vs-template size ratio.
-      clone.tplW = t.tplW || t.w || 0;
-      clone.tplH = t.tplH || t.h || 0;
+      // `t` may be an OVERRIDE record whose own size is already the resized
+      // value (0920: `3:26131/3:10899` spells 12.5 while the component's
+      // Vector is 18.75) — the natural size is the template SLOT's. Reading
+      // it off the override gave ratio 1 and left every nested-icon
+      // vectorNetwork unscaled (154 vectors drawn 1.5× too big for their box).
+      clone.tplW = t.tplW || (slot && slot.w) || t.w || 0;
+      clone.tplH = t.tplH || (slot && slot.h) || t.h || 0;
       if (t.relativeTransform) {
         const m = t.relativeTransform;
         clone.relativeTransform = [[m[0][0], m[0][1], clone.x], [m[1][0], m[1][1], clone.y]];
@@ -4195,6 +4315,7 @@
         // the ambient scale inside the COMPONENT — its real ambient is the one
         // the parent walk already handed down.
         inst.effScale = (!inst.isSynthesizedInstanceChild && inst.trailer && inst.trailer.scaleFactor) ||
+          (inst.isSynthesizedInstanceChild && inst.trailer && inst.trailer.scaleFactor && (inst.effScale || 1) * inst.trailer.scaleFactor) ||
           inst.effScale || 1;
         // walk the template subtree breadth-first; parents are processed before
         // children so the parent's actual size is known for constraint scaling.
@@ -4207,6 +4328,22 @@
           const tplNode = cur.tplNodeOverride || nodes[cur.tplId];
           const cloneNode = nodes[cur.cloneId];
           if (!tplNode || !cloneNode) continue;
+          // Fifth instance form (0920 fixture): the instance's direct child is
+          // a slash-id STUB, but the stub's OWN children are complete TYPED
+          // bare-id records (`3:13786` under `3:13781/3:06938`) — the same
+          // materialized shape as above, one level down. Those bare ids are
+          // the API child ids; cloning the template children next to them
+          // doubled every such container (1779 extras, 633 instances).
+          if (!mgShareModeActive && cur.cloneId !== instId) {
+            const rawKids = childIds[cur.cloneId];
+            let typed = false;
+            if (rawKids) {
+              for (const cid of rawKids) {
+                if (cid.indexOf("/") < 0 && nodes[cid] && nodes[cid].type) { typed = true; break; }
+              }
+            }
+            if (typed) continue;
+          }
           const tplChildren = (childIds[cur.tplId] || []);
           for (const childTplId of tplChildren) {
             let t = nodes[childTplId];
@@ -4222,8 +4359,21 @@
             // recolor in `24:1747/24:0946` was never found and the map's
             // location marker imported with the component's black.
             const rootKey = cur.rootPath + "/" + lastSegId;
-            if (overrideKey !== childTplId && nodes[overrideKey]) t = nodes[overrideKey];
-            else if (rootKey !== childTplId && nodes[rootKey]) t = nodes[rootKey];
+            // Override records can be keyed at ANY depth of the template path
+            // (0920: `3:30658/3:26786/3:11624` "商户" sits beside the
+            // shallower `3:26786/3:11624` "已关闭"; `3:22167/3:10542` recolors
+            // a vector whose walk path is `3:28657/3:22167`). Try the full
+            // path first, then every shorter suffix, then the flat root key.
+            {
+              const pathSegs = cur.tplPath.split("/");
+              let picked = null;
+              for (let si = 0; si < pathSegs.length && !picked; si++) {
+                const key = pathSegs.slice(si).join("/") + "/" + lastSegId;
+                if (key !== childTplId && nodes[key]) picked = nodes[key];
+              }
+              if (!picked && rootKey !== childTplId && nodes[rootKey]) picked = nodes[rootKey];
+              if (picked) t = picked;
+            }
             // Full-export bare override mirror: the record whose parent is the
             // current mirror (or the job's slot) and whose templateRef is this
             // template child overrides it, exactly like the share overrideKey.
@@ -4286,7 +4436,9 @@
               // waypoints mirror's subtree).
               queue.push({
                 instId: cloneId,
-                tplSide: lastSegId,
+                // Keep the override record's own path so deeper overrides
+                // (`3:30658/3:26786/3:11624`) stay reachable from the child job.
+                tplSide: (!bareOv && t !== nodes[childTplId] && t.id && t.id.indexOf("/") >= 0) ? t.id : lastSegId,
                 slotId: !mgShareModeActive ? (bareOv ? bareOv.id : childTplId) : undefined
               });
             } else {
@@ -4411,20 +4563,23 @@
             }
           }
           // Full-export stubs omit non-overridden fields entirely: an absent
-          // transform axis inherits the template child's position (0712-1
+          // transform object inherits the template child's position (0712-1
           // Keyboard: ENTER stub has no `18` field, baseline x/y = template's
-          // 20/18). Share stubs keep the omission-is-zero doctrine above, and
+          // 20/18). When a raw stub has a transform object, omitted axes
+          // mean zero; inheriting a centered slot's -5 shifts aligned labels.
+          // Synthesized children retain their existing slot fallback.
+          // Share stubs keep the omission-is-zero doctrine above, and
           // so do boolean-leaf members (mask bit 0x4000) — their omitted axes
           // really are 0 in the flattened-leaf coordinate space (43+84 cover
           // vectors regressed when inherited).
           if (!mgShareModeActive && n.isRawRecord &&
               (n.overrideMask19 === undefined || (n.overrideMask19 & 0x4000) === 0)) {
             const fullScale = Math.abs(n.effScale || 1);
-            if (!n.hasExplicitX) {
+            if ((!n.hasExplicitTransform || n.isSynthesizedInstanceChild) && !n.hasExplicitX) {
               n.x = (slot.x || 0) * fullScale;
               if (n.relativeTransform) n.relativeTransform[0][2] = n.x;
             }
-            if (!n.hasExplicitY) {
+            if ((!n.hasExplicitTransform || n.isSynthesizedInstanceChild) && !n.hasExplicitY) {
               n.y = (slot.y || 0) * fullScale;
               if (n.relativeTransform) n.relativeTransform[1][2] = n.y;
             }
@@ -4707,9 +4862,45 @@
     // reaches the override matcher as `undefined` and the override silently
     // never happens; the compare tool cannot catch it because CLI conversions
     // run unslimmed. See tools/tests/mgPackage.test.js.
+    // MasterGo permits structural edits inside instances. Figma's instance
+    // overrides cannot insert/delete children: keep such subtrees editable as
+    // frames, and keep their full props before the UI memory optimization.
+    function mgMarkStructuralInstanceFallbacks(records) {
+      const byId = {};
+      const signatures = {};
+      const active = {};
+      const interned = new Map();
+      for (const record of records) byId[record.id] = record;
+      function signature(id) {
+        if (signatures[id] !== undefined) return signatures[id];
+        const record = byId[id];
+        if (!record || active[id]) return -1;
+        active[id] = true;
+        const type = record.mainComponentId ? "FRAME" : record.props.type;
+        const children = (record.childIds || []).map(signature);
+        delete active[id];
+        const key = type + ":" + children.join(",");
+        if (!interned.has(key)) interned.set(key, interned.size);
+        return signatures[id] = interned.get(key);
+      }
+      let count = 0;
+      for (const record of records) {
+        const master = byId[record.mainComponentId];
+        if (!master) continue;
+        const actual = (record.childIds || []).map(signature);
+        const expected = (master.childIds || []).map(signature);
+        if (actual.length !== expected.length || actual.some((value, index) => value !== expected[index])) {
+          record.instanceStructureFallback = true;
+          count++;
+        }
+      }
+      return count;
+    }
+
     const MG_SLIM_LAYOUT_KEYS = [
       "x", "y", "width", "height", "relativeTransform", "rotation",
-      "itemSpacing", "paddingLeft", "paddingRight", "paddingTop", "paddingBottom"
+      "itemSpacing", "paddingLeft", "paddingRight", "paddingTop", "paddingBottom",
+      "layoutGrow", "layoutAlign", "layoutPositioning", "minWidth", "maxWidth", "minHeight", "maxHeight"
     ];
 
     function mgSlimInstanceDescendantProps(props) {
@@ -5133,12 +5324,13 @@
       // share-export instances (no reachable master → frame-shell restore
       // from these very records) keep full fidelity. The compare tool and
       // pythonParser call without options and keep byte-identical output.
+      mgMarkStructuralInstanceFallbacks(records);
       if (options && options.slimInstanceDescendants) {
         const recordById = {};
         for (const record of records) recordById[record.id] = record;
         const slimIds = {};
         for (const record of records) {
-          if (!record.mainComponentId) continue;
+          if (!record.mainComponentId || record.instanceStructureFallback) continue;
           const stack = (record.childIds || []).slice();
           while (stack.length) {
             const cid = stack.pop();
@@ -5326,7 +5518,7 @@
               id: sid, styleType: "TEXT", name: def.name,
               fontName: mgFontNameFromStyleEntry(entry) || { family: "Inter", style: "Regular" },
               fontSize: (entry.fontSize !== null && entry.fontSize > 0) ? entry.fontSize : 12,
-              lineHeight: mgLineHeightFromStyleEntry(entry, 1, !mgShareModeActive && !!entry.fontFileHash),
+              lineHeight: mgLineHeightFromStyleEntry(entry, 1, !mgShareModeActive && !!entry.hasFontFileHashField),
               letterSpacing: mgLetterSpacingFromStyleEntry(entry, 1),
               textCase: entry.textCase || "ORIGINAL",
               textDecoration: entry.decoration || "NONE"
@@ -5366,6 +5558,7 @@
     isMgPackage: isMgPackage,
     convertMgPackageToV2Entries: convertMgPackageToV2Entries,
     __test: {
+      inheritFromTemplate: mgInheritFromTemplate,
       resolveInstanceVisibility: mgResolveInstanceVisibility,
       shouldInheritStroke: mgShouldInheritStroke,
       decodeNativeNodes: mgDecodeNativeNodes,
@@ -5386,6 +5579,8 @@
       maskRendersFill: mgMaskRendersFill,
       scanStyleDefs: mgScanStyleDefs,
       slimInstanceDescendantProps: mgSlimInstanceDescendantProps,
+      markStructuralInstanceFallbacks: mgMarkStructuralInstanceFallbacks,
+      stubTrailerField: mgStubTrailerField,
       resolveBooleanLeafSize: mgResolveBooleanLeafSize,
       scaleByConstraint: mgScaleByConstraint,
       coversTemplateParent: mgCoversTemplateParent,

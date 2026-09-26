@@ -285,6 +285,8 @@ export type ImportLayerRecord = {
     // Record id of the component this record is an instance of (native .mg
     // imports only). The importer re-links it via component.createInstance().
     mainComponentId?: string;
+    // Structural edits cannot be replayed on a Figma instance; restore its full frame tree.
+    instanceStructureFallback?: boolean;
     // Off-canvas copy of a shared-library component master (native .mg only).
     // Restored so instances can re-link, then removed in the cleanup phase —
     // MasterGo never shows it on its own canvas either.

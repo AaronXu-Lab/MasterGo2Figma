@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1040" role="img" aria-labelledby="title desc">
+<title id="title">MG 导入修复工作流程</title><desc id="desc">提醒前台操作后定位本地文件和已初始化的 Figma，对比证据后分别修复解码器或导入器，回归构建并实际导入。问题未解决则回到分诊，完成后交付验证页；无法继续的阻塞需明确报告。</desc>
+<style>text{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;fill:#243746;text-anchor:middle} .title{font-size:30px;font-weight:700}.label{font-size:18px;font-weight:600}.note{font-size:14px}.box{stroke-width:2;rx:14}.input{fill:#fff;stroke:#9eacb8}.step{fill:#edf6ff;stroke:#287bbb}.decision{fill:#fff7e6;stroke:#c98312;stroke-width:2}.done{fill:#edf9f1;stroke:#2e8b54}.stop{fill:#fff0ef;stroke:#c94b43}.line{fill:none;stroke:#52606d;stroke-width:2.5;marker-end:url(#arrow)}</style>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10Z" fill="#52606d"/></marker></defs>
+<rect width="1200" height="1040" fill="#f7f9fb"/>
+<text x="600" y="48" class="title">MG 导入修复 · 真实导入验收</text>
+<rect x="370" y="80" width="460" height="76" class="box input"/><text x="600" y="110" class="label">提醒前台切换，定位输入</text><text x="600" y="136" class="note">本地 MG / ZIP ＋ setup 已准备的 Figma</text>
+<path d="M600 156V186" class="line"/>
+<rect x="370" y="186" width="460" height="76" class="box step"/><text x="600" y="216" class="label">按用户范围对比三侧证据</text><text x="600" y="242" class="note">图片看渲染，ZIP 看结构，MG 是修复对象</text>
+<path d="M600 262V286" class="line"/>
+<polygon points="600,286 745,344 600,402 455,344" class="decision"/><text x="600" y="350" class="label">差异来自哪一层？</text>
+<path d="M455 344H295V432" class="line"/><text x="320" y="329" class="note">仅 MG 错</text>
+<path d="M745 344H905V432" class="line"/><text x="874" y="329" class="note">两者同错 / 画布异常</text>
+<rect x="120" y="432" width="350" height="72" class="box step"/><text x="295" y="462" class="label">修复原生解码</text><text x="295" y="486" class="note">原始字段、继承与实例展开逐段定位</text>
+<rect x="730" y="432" width="350" height="72" class="box step"/><text x="905" y="462" class="label">修复导入与渲染语义</text><text x="905" y="486" class="note">真实节点树、布局收尾、字体与蒙版</text>
+<path d="M295 504V530H600V555M905 504V530H600" fill="none" stroke="#52606d" stroke-width="2.5"/><path d="M600 545V562" class="line"/>
+<rect x="370" y="562" width="460" height="64" class="box step"/><text x="600" y="588" class="label">回归测试与两端构建</text><text x="600" y="611" class="note">检查新增差异，保留已有工作</text>
+<path d="M600 626V656" class="line"/>
+<rect x="370" y="656" width="460" height="76" class="box step"/><text x="600" y="686" class="label">Figma 前台运行插件，实际导入</text><text x="600" y="712" class="note">确认成功后重新取节点，截图与原图对照</text>
+<path d="M600 732V755" class="line"/>
+<polygon points="600,755 745,813 600,871 455,813" class="decision"/><text x="600" y="819" class="label">目标问题解决？</text>
+<path d="M455 813H70V224H370" class="line"/><text x="250" y="800" class="note">否：仍有可修复差异</text>
+<path d="M745 813H900" class="line"/><text x="855" y="796" class="note">无法继续</text>
+<rect x="900" y="784" width="240" height="64" class="box stop"/><text x="1020" y="810" class="label">报告具体阻塞</text><text x="1020" y="833" class="note">明确未验证项，保留当前结果</text>
+<path d="M600 871V914" class="line"/><text x="620" y="898" class="note">是</text>
+<rect x="370" y="914" width="460" height="76" class="box done"/><text x="600" y="944" class="label">交付验证页与修复证据</text><text x="600" y="970" class="note">同步文档，清理本轮临时实验，说明残差</text>
+</svg>

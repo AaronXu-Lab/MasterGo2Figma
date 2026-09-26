@@ -399,6 +399,16 @@ export function getLayoutMode(node: any): string {
     return "NONE";
 }
 
+export function getLayoutWrap(node: any): string | undefined {
+    const value = readAutoLayoutProperty(node, "layoutWrap", readAutoLayoutProperty(node, "flexWrap", undefined));
+    return value === "WRAP" || value === "NO_WRAP" ? value : undefined;
+}
+
+export function getCounterAxisSpacing(node: any): number | undefined {
+    const value = readAutoLayoutProperty(node, "counterAxisSpacing", readAutoLayoutProperty(node, "crossAxisSpacing", undefined));
+    return typeof value === "number" && isFinite(value) && value >= 0 ? value : undefined;
+}
+
 export function getAxisAlign(value: any): string {
     if (value === "MIN" || value === "CENTER" || value === "MAX" || value === "SPACE_BETWEEN") return value;
     if (value === "START" || value === "FLEX_START") return "MIN";
@@ -561,6 +571,12 @@ export function getUniversalProperty(selection: any, sourceType?: string, restor
             "height": readNodeProperty(selection, "height", 0),
             "constrainProportions": readNodeProperty(selection, "constrainProportions", false) || false,
             "layoutMode": getLayoutMode(selection as any),
+            "minWidth": readNodeProperty(selection, "minWidth", null),
+            "maxWidth": readNodeProperty(selection, "maxWidth", null),
+            "minHeight": readNodeProperty(selection, "minHeight", null),
+            "maxHeight": readNodeProperty(selection, "maxHeight", null),
+            "layoutWrap": getLayoutWrap(selection),
+            "counterAxisSpacing": getCounterAxisSpacing(selection),
             "itemSpacing": readAutoLayoutNumber(selection, "itemSpacing", 0),
             "paddingLeft": readAutoLayoutNumber(selection, "paddingLeft", 0),
             "paddingRight": readAutoLayoutNumber(selection, "paddingRight", 0),

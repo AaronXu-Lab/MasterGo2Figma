@@ -1903,3 +1903,133 @@ MG 解码；字号回退和布尔图标颜色是 importer。组件没有 image�
 填充，也不要针对某个图层写坐标补丁。仅在svgMissingRegions、单vector、尺寸
 和线性变换都与源匹配时提升路径，让正常属性路径恢复位置/效果一次；保留SVG
 真实轮廓和regions。实际本机ZIP重导入验证，详情见parity文档同日ZIP follow-up。
+
+## 2026-09-19 · 测试集 0920「测试b端」：先看 Extra 与 opacity 分布，再逐族交叉表
+
+三个页面（`_image` 渲染基准 / `_zip` 结构基准 / `_mg`）齐全，compare 起手 deep 15948、
+paint 1355、Extra 1779。按"现象查表"分诊：
+
+1. **Extra 1779 不是库 master**——633 个实例容器每个多出 3 条模板克隆。dump 一条
+   `3:13786`：parent 是 slash stub、有 type、没 `1a`。这是 Tesla "fully materialized" 形态
+   下移一层的变体；在 walk 内套用同一谓词即可（不要在实例级判定后就不再看）。
+2. **opacity 交叉表**（actual→expected 对）：`0.88→1 ×417、0.25→1 ×275、0.45→1 ×230、0.06→1
+   ×138、0.15→1 ×72、0.88→0.44 ×53`，而 `0.12→0.12 / 0.5→0.5` 等对角线全是节点内联 paint。
+   hexdump 变量 paint：`08 a=1 … 09 0.88`——`09` 与真值无关；`colorTextHeading` 的
+   `08 a=0.44 09 0.88` 一锤定音。渲染取样确认（`首页` 文字最深像素 image (29,33,41)
+   = zip，mg (57,60,67)）。老测试用例是按"09 可以覆盖 alpha=1"的假设写的，改测试而不是改规则。
+3. **fills.length 0→1**：先数 paint 尾部 `0d 00` 之后的下一个 tag（`00` 247 / `0e` 78 /
+   `0f` 1），两个未知 tag 各吞掉一整条 paint。剩下 55 条是"变量根本没有 paint 子记录"：
+   在 document 里搜期望颜色的 twisted-float 字节串（a=1 r=1 g=0.302 b=0.2 → `08 7f000000
+   7f000000 7d363535 7c9a9999`），命中 3:06852，再搜 `3:06852` 的全部出现位置就撞见了
+   id 关联表里的别名行。**按期望值反查字节串**比猜结构快得多。
+4. **layoutAlign STRETCH**：先前四维交叉表无分离度，是因为只看标量区；这次把 trailer 前 8
+   字节按 (类型对象头, trailer 头) 二维制表，`1f 01` 只出现在 STRETCH 侧。全量 raw 记录
+   273/273 vs 0/976。
+5. **trailer 走读器的静默 null**：加 `1f` 后仍有 45 行 STRETCH 没出来，插桩打印才发现模板
+   记录的 `trailer` 是 null——`30 01 01 <string>` 被当作 2 字节 tag 跳过后掉进字符串。用
+   python 复刻 walkTrailerFields 做未知 tag 普查（30/28/32/29/33），一次补齐。
+   **walkTrailerFields 返回 null 等于该记录所有 trailer 字段消失**，任何新 fixture 都应先跑
+   一遍这个普查。
+6. **"合成克隆不借模板 tag 26"的 0806 规则**在 0920 上直接翻车（strokeWeight 210 行）。做
+   A/B：合成的嵌套 INSTANCE 乘上模板 26，0920 −552 行、0806 0 新增。两个 fixture 各持一半
+   真相时，先做 A/B 看另一集是否真的依赖旧规则，别先争论语义。
+7. **override 深度**：插桩打印 `t.id / overrideKey / rootKey`，发现两个方向的失配（路径太长
+   找不到浅层记录；路径太短找不到深层记录），统一成"后缀逐级缩短"查找。
+
+教训：compare 的 Extra 只报 id，不报形态——先 dump 一条看 parent/type/`1a` 再定性；
+opacity 这类连续值要按 (actual, expected) 对制表，对角线上的样本告诉你规则的边界在哪。
+
+
+## 2026-09-19 续修：0920 换行缺失属于公共导入链路
+
+三页真实树与截图显示：mg/zip 侧栏均只有一排，筛选前 3 项仍存在且 visible=true，却被横向
+布局推到负 x。zip 原始坐标呈 3 列 × 2 行；菜单呈 2 列多行。两条路径均漏掉 wrap 字段，
+此时继续 hexdump 不能修复旧 zip。新增 legacyWrapLayout.ts，以完整、有序、不重叠且行距
+一致的多行坐标兼容旧包；显式 NO_WRAP 不推断，普通溢出不推断。发送端从已安装 MasterGo
+类型定义确认字段为 autoLayout.flexWrap/crossAxisSpacing，新 zip 直接保留。接收端延迟布局
+回放 layoutWrap/counterAxisSpacing。0920 两路径均命中 29，0806 均 0。画布 mg 页实改 29 个
+容器并检查三个画板；未运行完整插件重导入。表单标签实例尺寸覆盖仍是独立残差。
+
+
+## 2026-09-19 续修：0920 图表结构覆盖与绝对定位标签
+
+用户实际重导入页面 24:9467 后，换行已经恢复，但详情两张图只剩坐标轴。
+原始记录中的绘图子树仍存在且可见；嵌套 `.图表-框架` 实例增添了母版没有的
+曲线/柱体，旧导入器创建原母版实例后因子数不同跳过覆盖。解码输出新增
+instanceStructureFallback 标志（15 条），按递归、有序节点类型签名识别结构
+不兼容，保留完整可编辑 Frame 并禁止 deferred relink。不能靠 props deep diff
+验证这类画布丢层问题。
+
+另一个独立问题是 ABSOLUTE + MAX + AUTO 的标签框：源宽 113、x=-129，Figma
+HUG 收到 80 后右边缘从 -16 退到 -49。延迟布局对该组合保留源固定轴尺寸；
+普通流式 HUG 不变。两端构建及 87 项测试通过，0920 deep1429、0806 deep1280
+均未新增；实际导入视觉结果另记录于 parity 状态。
+
+
+## 2026-09-19 · 0920 nested chart absolute-position inheritance
+
+User node 26:17514 has recovered bars, but grid height is ~33px and the x-axis
+sits above the plot. ZIP 1:6446 and image 1:9890 agree on overlay placement.
+Decoded plot 3:49738/3:49064/3:48511 incorrectly had AUTO while its slot 3:48511
+contains trailer 2e 01 (verified by sequential decoded field and raw record).
+Use slot trailer inheritance for absent absolute flags, preserve it in the UI
+slim record and replay instance-child positioning after parent layout exists.
+Six deep mismatches disappear, 0806 digest stays unchanged. 88 tests pass.
+Desktop plugin launch could not be confirmed this round (native window snapshot
+was tiny/distorted and repeated menu/shortcut attempts did not show a panel).
+No canvas patch was substituted for a real import. A proposed isolated clone
+experiment failed loading PingFang SC before creating any nodes.
+
+## 2026-09-19 — 0920 visual follow-up: headers, button widths, legends, icons
+
+Cross-tabbed the three header image paints against ZIP and established all eight
+sequential adjustment slots. Four previously unnamed controls explain missing
+header toning. Computed font entries with EMPTYHASHFFFFFFF were incorrectly
+interpreted as logical styles; AUTO legend height became 10px, shifting plot
+layout. The field's presence now marks computed entries regardless of font hash.
+
+Button width was traced to native trailer 32 rather than inferred from its name
+or current box: the component explicitly stores minWidth 74. Preserve the field
+through decoder, slim transport, deferred layout, and instance overrides. Export
+size limits for future ZIPs as well; old ZIPs cannot serve as their value oracle.
+
+The 经营 outline is a stroke-only outer BOOLEAN_OPERATION with one RECTANGLE
+child whose own stroke width is zero. Single-child promotion previously copied
+paint only to boolean children and returned early without a visible fill. Copy
+outer strokes independently to any promoted geometry node.
+
+Offline validation is recorded in parity status. Actual desktop plugin reimport
+and image comparison are still pending; no claim of visual closure is made.
+
+### 0920 second visual pass after successful desktop import
+
+Real plugin import completed with 2911 reported layers on page `35:26108`.
+Buttons, outlines, legends and bar baselines matched the image. Three remaining
+issues were identified from all three screens, not only the chart:
+
+- The gray header was an extra mask-fill twin. Hiding the ZIP twin restored the
+  pale blue background. Default #D8D8D8 alpha gradients are coverage placeholders,
+  like default solid mask fills; do not add their gray backdrop a second time.
+- The absolute curve plot grew from source height 362 to 378 while its auto-layout
+  parent was assembled. Its SCALE-constrained vectors stretched with it. Restore
+  source stretch insets after parent layout settles, accounting for actual parent
+  width changes so inherited 679px plots still fit their 516px slots.
+- One cyan status text resolved through the wrong variable mode. Binary alias row
+  order differs from collection mode order. Default alias resolution now uses the
+  declared mode sort code; 0920 paint mismatches drop from 1 to 0.
+
+Foreground import succeeded after the earlier background session timed out. The
+failed page `35:22060` was removed; no historical user comparison pages were removed.
+
+Final validation: three successful real desktop imports; final page `35:34208`
+(页面 1_mg 7). A fifth deferred-layout pass restores fixed auto-layout descendants
+after correcting an absolute plot's stretch insets. Without it, bar rows become
+346px high instead of 362px and stop 16px above zero. Curves and bar bounds now
+match the image's integer-pixel bounds; buttons are 74px, legends 17px, extra gray
+mask twins absent. All three screens were visually compared. Small header tonal
+and edge-rasterization differences remain quantified in parity status; do not
+claim exact pixel equality. Tests 95/95; both builds pass.
+
+### 2026-09-19：表单标签上移 5 px
+
+从 Figma `35:36661` 定位到原生 `3:43181/3:39831`：原始解码 y=0，模板继承后变成 -5，ZIP 为 0。原因是完整导出路径按轴继承遗漏值，没有区分“整个 transform 缺失”和“对象存在但零轴省略”。仅对真实 raw stub 保留对象中的零轴，合成子层继续原有回退；避免误改隐藏预填选项的约束位置。0920 geometry 166→157、transform 53→44、deep props 1609→1591；0806 geometry 182→180、transform 108→106、deep props 1272→1268。新增原生/缺失对象/合成子层回归测试。

@@ -1,6 +1,7 @@
+import { restoreLegacyWrapLayout } from "./legacyWrapLayout";
 import { ImportLayerRecord, ImportManifest, ImportPageIndex, MissingFontTextRestoreResult } from "../../shared/types";
 import { state } from "./state";
-import { isBackdropCoverageMask } from "./appliers/maskFill";
+import { isBackdropCoverageMask, isDefaultMaskFill } from "./appliers/maskFill";
 import {
   ensureLayerRulesLoaded, hasValidLayerRules, getLayerRuleStatus
 } from "./layerRules";
@@ -195,6 +196,9 @@ function showImportUI() {
 }
 
 async function refreshMissingFontsInDocument() {
+  // The user may have installed fonts since the import — drop cached
+  // rejections so the retry really re-asks Figma.
+  state.fontLoadPromises = {};
   try {
     await ensureLayerRulesLoaded();
     if (!hasValidLayerRules()) throw new Error("请先导入有效的图层转换规则 JSON");
@@ -276,6 +280,8 @@ async function startImportSession(message: any) {
 
   state.importInProgress = true;
   state.reset();
+  // Font-load results (including cached failures) are per session.
+  state.fontLoadPromises = {};
   state.resetRestoreRuntimeStats(totalNodes, totalPages);
   clearPendingImportAssets();
   clearPendingImportPages();
@@ -558,6 +564,7 @@ async function restoreImportPageData(importPage: ImportPageIndex, layers: { [id:
   if (importPage.layerCount !== undefined && pageNodeCount !== Number(importPage.layerCount)) {
     throw new Error(`页面记录数量不一致：expected=${importPage.layerCount}, actual=${pageNodeCount}`);
   }
+  restoreLegacyWrapLayout(layers);
   const postprocessStart = session.postProcessedNodes;
   figma.ui.postMessage({
     type: "progress",
@@ -1066,7 +1073,7 @@ async function restoreImportedNode(
   // When that component was already restored in this session, recreate a REAL
   // InstanceNode (component.createInstance) instead of a frame shell; any
   // failure falls through to the ordinary restore path below.
-  if (layerRecord.mainComponentId) {
+  if (layerRecord.mainComponentId && !layerRecord.instanceStructureFallback) {
     const instanceRestored = await tryRestoreAsInstance(layerRecord, parent, layers, restoredBefore, totalNodes);
     if (instanceRestored > 0) return instanceRestored;
   }
@@ -1146,7 +1153,7 @@ async function restoreImportedNode(
     // Remember the shell; retryDeferredInstanceRelinks swaps it after the
     // page finishes. Parents register before their children restore, so the
     // relink pass sees outer shells first and inner ones become no-ops.
-    if (layerRecord.mainComponentId) {
+    if (layerRecord.mainComponentId && !layerRecord.instanceStructureFallback) {
       activeImportSession.deferredInstanceRelinks.push({ id: nodeId, node: newNode });
     }
   }
@@ -1263,7 +1270,7 @@ async function retryDeferredInstanceRelinks(layers: { [id: string]: ImportLayerR
     const overrideLayers = entry.layers || layers;
     const layerRecord = overrideLayers[entry.id];
     const shell = entry.node;
-    if (!layerRecord || !layerRecord.mainComponentId || !shell || shell.removed) continue;
+    if (!layerRecord || !layerRecord.mainComponentId || layerRecord.instanceStructureFallback || !shell || shell.removed) continue;
     const componentNode = session.restoredNodeById[layerRecord.mainComponentId];
     if (!componentNode || componentNode.removed || componentNode.type !== "COMPONENT") {
       // The master may live on a later page. Retain only this instance's
@@ -1377,16 +1384,6 @@ function paintFilledMaskTwins(session: ImportSession): number {
   const hasVisiblePaint = (paints: any): boolean =>
     Array.isArray(paints) && paints.some((paint: any) =>
       paint && paint.visible !== false && (paint.opacity === undefined || paint.opacity > 0));
-  // MasterGo's untouched-mask placeholder fill is SOLID #D8D8D8 (216/255).
-  // MasterGo does NOT render it (临时测试 tab row: masked labels sit on white),
-  // so a twin for it paints a gray bar that isn't in the design. Only
-  // user-painted masks (gradients, real colors) get the render-parity twin.
-  const isDefaultMaskFill = (paints: any): boolean =>
-    Array.isArray(paints) && paints.length === 1 && paints[0] &&
-    paints[0].type === "SOLID" && paints[0].color &&
-    Math.abs(paints[0].color.r - 216 / 255) < 1e-3 &&
-    Math.abs(paints[0].color.g - 216 / 255) < 1e-3 &&
-    Math.abs(paints[0].color.b - 216 / 255) < 1e-3;
 
   const visit = (node: SceneNode) => {
     // Instance children are locked; their component already got the twin.
@@ -1538,8 +1535,14 @@ async function applyInstanceChildOverrides(
     // applyDeferredLayoutRestores, which runs after instances are created, so
     // right now every one of these nodes is still layoutMode NONE and the
     // assignment would silently no-op. Queue it for the post-layout flush.
-    if (props.layout && "layoutMode" in node &&
-        INSTANCE_LAYOUT_OVERRIDE_KEYS.some(key => typeof props.layout[key] === "number")) {
+    // layoutGrow / layoutAlign are per-CHILD overrides (0920: a DatePicker
+    // instance inside a Form Item instance stores grow 1 and must fill the
+    // 264px item; the component's own 320 otherwise overflows it). They need
+    // the PARENT's layoutMode, which the same deferred pass supplies.
+    if (props.layout && (
+        ("layoutMode" in node && INSTANCE_LAYOUT_OVERRIDE_KEYS.some(key => typeof props.layout[key] === "number")) ||
+        typeof props.layout.layoutGrow === "number" || typeof props.layout.layoutAlign === "string" ||
+        typeof props.layout.layoutPositioning === "string")) {
       pendingInstanceLayoutOverrides.push({ node: node, layout: props.layout });
     }
   }
@@ -1551,7 +1554,7 @@ const pendingInstanceLayoutOverrides: Array<{ node: SceneNode; layout: any }> = 
 // Must stay in sync with MG_SLIM_LAYOUT_KEYS in src/ui/mgPackage.js — the UI
 // converts .mg with slimInstanceDescendants, so anything not on that keep-list
 // arrives here as undefined and the override silently never happens.
-const INSTANCE_LAYOUT_OVERRIDE_KEYS = ["itemSpacing", "paddingLeft", "paddingRight", "paddingTop", "paddingBottom"];
+const INSTANCE_LAYOUT_OVERRIDE_KEYS = ["minWidth", "maxWidth", "minHeight", "maxHeight", "itemSpacing", "paddingLeft", "paddingRight", "paddingTop", "paddingBottom"];
 
 // Runs TWICE: once per page right after the deferred layout pass, then again at
 // session finalize. The retry is not belt-and-braces — writing the component's
@@ -1565,14 +1568,28 @@ function flushInstanceChildLayoutOverrides(final: boolean): number {
   for (const entry of pendingInstanceLayoutOverrides) {
     const node = entry.node as any;
     if (!node || node.removed) continue;
+    keep.push(entry);
+    // Child-side overrides: valid once the PARENT is auto-layout.
+    const parent = node.parent as any;
+    if (parent && parent.layoutMode && parent.layoutMode !== "NONE") {
+      for (const key of ["layoutPositioning", "layoutGrow", "layoutAlign"]) {
+        const want = entry.layout[key];
+        if (want === undefined || want === null || node[key] === want) continue;
+        try {
+          node[key] = want;
+          if (node[key] === want) applied++; else rejected++;
+        } catch (error) {
+          rejected++;
+          console.warn("[mg-instance] child layout override rejected:", node.name, key, error);
+        }
+      }
+    }
     // The component side gets its layoutMode from applyDeferredLayoutRestores;
     // until that has run, writing spacing here is a no-op. Retry at finalize.
-    if (node.layoutMode === "NONE" || node.layoutMode === undefined) {
-      keep.push(entry);
+    if (!("layoutMode" in node) || node.layoutMode === "NONE" || node.layoutMode === undefined) {
       deferred++;
       continue;
     }
-    keep.push(entry);
     for (const key of INSTANCE_LAYOUT_OVERRIDE_KEYS) {
       const want = entry.layout[key];
       if (typeof want !== "number" || !isFinite(want)) continue;

@@ -394,10 +394,12 @@ test("mixed font runs retain order and style refs across explicit run flags", ()
 
 test("solid alpha survives default paint opacity without multiplying duplicate spellings", () => {
   const head = Buffer.from("\x011:2\0\x021:1\0\x03a0\0", "binary");
-  // Twisted floats: 0.5 = 7e000000, 1 = 7f000000.
+  // Twisted floats: 0.5 = 7e000000, 1 = 7f000000. The `08` alpha IS the
+  // opacity whenever a color is present; `09` is ignored (0920: variable
+  // paints write `09 0.88` beside alpha 1 and render/API say 1).
   for (const [alpha, opacity, expected] of [
     [0x7e, 0x7f, 0.5], [0x7e, null, 0.5],
-    [0x7f, 0x7e, 0.5], [0x7e, 0x7e, 0.5], [0x7f, 0, 0]
+    [0x7f, 0x7e, 1], [0x7e, 0x7e, 0.5], [0x7f, 0, 1]
   ]) {
     const bytes = Buffer.concat([head, Buffer.from([
       8, alpha, 0, 0, 0, 0x7f, 0, 0, 0, 0x7f, 0, 0, 0, 0x7f, 0, 0, 0,
@@ -564,4 +566,96 @@ test("slim instance text retains typography and mixed runs without vector payloa
   assert.deepEqual(slim.lineHeight,props.lineHeight);
   assert.deepEqual(slim.styledTextSegments,props.styledTextSegments);
   assert.equal(slim.vectorNetwork,undefined);
+});
+
+test('structurally edited chart instances retain their added plot subtree', () => {
+  const rec = (id, type, childIds = [], mainComponentId) => ({id, props:{type}, childIds, mainComponentId});
+  const records = [rec('base','COMPONENT',['axis']), rec('axis','FRAME'),
+    rec('chart','FRAME',['chartAxis','plot'],'base'), rec('chartAxis','FRAME'), rec('plot','VECTOR'),
+    rec('plain','FRAME',['plainAxis'],'base'), rec('plainAxis','FRAME')];
+  assert.equal(__test.markStructuralInstanceFallbacks(records),1);
+  assert.equal(records.find(r=>r.id==='chart').instanceStructureFallback,true);
+  assert.equal(records.find(r=>r.id==='plain').instanceStructureFallback,undefined);
+  assert.equal(records.find(r=>r.id==='plot').props.type,'VECTOR');
+});
+
+test('instance topology checks inspect deep descendants and equal-count type swaps', () => {
+  const rec = (id, type, childIds = [], mainComponentId) => ({id, props:{type}, childIds, mainComponentId});
+  const records = [rec('base','COMPONENT',['group']),rec('group','FRAME',['text']),rec('text','TEXT'),
+    rec('edited','FRAME',['editedGroup'],'base'),rec('editedGroup','FRAME',['vector']),rec('vector','VECTOR')];
+  assert.equal(__test.markStructuralInstanceFallbacks(records),1);
+  assert.equal(records.find(r=>r.id==='edited').instanceStructureFallback,true);
+});
+
+test('plot overlays inherit slot absolute positioning through nested stubs', () => {
+  const slot = {id:'plot',trailer:{absolute:true}};
+  const nested = {id:'master/plot',templateNode:'plot',trailer:{}};
+  const copy = {id:'chart/master/plot',templateNode:'master/plot',trailer:{}};
+  const nodes = {plot:slot,'master/plot':nested};
+  assert.equal(__test.stubTrailerField(copy,nodes,'absolute'),true);
+  copy.trailer.absolute=false;
+  assert.equal(__test.stubTrailerField(copy,nodes,'absolute'),false);
+  assert.equal(__test.stubTrailerField({id:'bare',templateRef:'plot',trailer:{}},nodes,'absolute'),undefined);
+  assert.equal(__test.slimInstanceDescendantProps({layout:{layoutPositioning:'ABSOLUTE'}}).layout.layoutPositioning,'ABSOLUTE');
+});
+
+
+test('missing font-file hash still identifies computed AUTO line height', () => {
+  const bytes = Buffer.concat([
+    Buffer.from('\x019:3\0\x05\x03\x03PingFang SC\0'),
+    Buffer.from([4,0x82,0,0,0x80,5,0x82,0,0,0x40]),
+    Buffer.from('\x0fEMPTYHASHFFFFFFF\0\0')
+  ]);
+  const entry = __test.scanFontStyles(bytes, bytes.toString('latin1'))['9:3'];
+  assert.equal(entry.hasFontFileHashField, true);
+  assert.equal(entry.fontFileHash, undefined);
+  assert.deepEqual(__test.lineHeightFromStyleEntry(entry, 1, entry.hasFontFileHashField), {unit:'AUTO'});
+});
+
+test('minimum width trailer survives decoding and slim instance transport', () => {
+  const bytes = Buffer.from([0x1d,1,0x32,0x85,0,0,0x28,0]);
+  const trailer = __test.parseTrailer(bytes, bytes.toString('latin1'), 0, bytes.length, 0);
+  assert.equal(trailer.minWidth, 74);
+  assert.equal(__test.slimInstanceDescendantProps({layout:{minWidth:74}}).layout.minWidth, 74);
+});
+
+test('image adjustments decode all eight sequential filter slots', () => {
+  const bytes = Buffer.concat([
+    Buffer.from('\x019:2\0\x029:1\0\x03a0\0\x05\x05\x0b\x03photo.png\0\0\x0d'),
+    Buffer.from([1,0x7e,0,0,0,2,0,3,0x7e,0,0,0,4,0,5,0x7e,0,0,0,6,0,7,0x7e,0,0,0,8,0,0,0])
+  ]);
+  const paint = __test.scanPaints(bytes, bytes.toString('latin1'))['9:1'][0];
+  assert.equal(paint.type, 'IMAGE');
+  assert.deepEqual(paint.filters, {contrast:0.5, exposure:0, highlights:0.5, saturation:0, shadows:0.5, temperature:0, tint:0.5, hue:0});
+});
+
+test('variable aliases use declared first mode instead of binary row order', () => {
+  const paint = (id, ref, r, g, b) => Buffer.concat([
+    Buffer.from('\x01'+id+'\0\x02'+ref+'\0\x03a0\0\x08'),
+    Buffer.from([0x7f,0,0,0,...(r?[0x7f,0,0,0]:[0]),...(g?[0x7f,0,0,0]:[0]),...(b?[0x7f,0,0,0]:[0]),0])
+  ]);
+  const bytes=Buffer.concat([
+    paint('9:10','9:2',0,1,1),paint('9:11','9:3',0,0,1),
+    Buffer.from('\x01M:2\0\x02a0\0\x03Local\0\x04\x01\0\x017:1\0\x02a1\0\x03Other\0\x04\x01\0'),
+    Buffer.from('\x019:9/7:1\0\x029:3\0\x04\x01\x059:9/7:1:0:0\0\x06\x02\0'),
+    Buffer.from('\x019:9/M:2\0\x029:2\0\x04\x01\x059:9/M:2:0:0\0\x06\x02\0')
+  ]);
+  const paints=__test.scanPaints(bytes,bytes.toString('latin1'));
+  assert.deepEqual(paints['9:9'][0].color,{r:0,g:1,b:1});
+});
+
+test("raw instance transform keeps an omitted axis at zero instead of inheriting a centered slot", () => {
+  const slot = { id: "label", x: -129, y: -5, constraintV: 3 };
+  const raw = { id: "item/label", isRawRecord: true, hasExplicitTransform: true,
+    hasExplicitX: true, hasExplicitY: false, x: -129, y: 0 };
+  const absent = { id: "other/label", isRawRecord: true, x: 0, y: 0 };
+  const synthesized = { id: "copy/label", isRawRecord: true, isSynthesizedInstanceChild: true,
+    hasExplicitTransform: true, x: 0, y: 0 };
+  __test.inheritFromTemplate({ label: slot, [raw.id]: raw, [absent.id]: absent, [synthesized.id]: synthesized });
+  assert.equal(raw.y, 0);
+  assert.equal(raw.x, -129);
+  assert.equal(raw.constraintV, 3);
+  assert.equal(absent.y, -5);
+  assert.equal(absent.x, -129);
+  assert.equal(synthesized.y, -5);
 });

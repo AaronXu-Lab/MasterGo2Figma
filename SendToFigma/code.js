@@ -845,6 +845,14 @@
     if (direction === "COLUMN") return "VERTICAL";
     return "NONE";
   }
+  function getLayoutWrap(node) {
+    const value = readAutoLayoutProperty(node, "layoutWrap", readAutoLayoutProperty(node, "flexWrap", void 0));
+    return value === "WRAP" || value === "NO_WRAP" ? value : void 0;
+  }
+  function getCounterAxisSpacing(node) {
+    const value = readAutoLayoutProperty(node, "counterAxisSpacing", readAutoLayoutProperty(node, "crossAxisSpacing", void 0));
+    return typeof value === "number" && isFinite(value) && value >= 0 ? value : void 0;
+  }
   function getAxisAlign(value) {
     if (value === "MIN" || value === "CENTER" || value === "MAX" || value === "SPACE_BETWEEN") return value;
     if (value === "START" || value === "FLEX_START") return "MIN";
@@ -1002,6 +1010,12 @@
         "height": readNodeProperty(selection, "height", 0),
         "constrainProportions": readNodeProperty(selection, "constrainProportions", false) || false,
         "layoutMode": getLayoutMode(selection),
+        "minWidth": readNodeProperty(selection, "minWidth", null),
+        "maxWidth": readNodeProperty(selection, "maxWidth", null),
+        "minHeight": readNodeProperty(selection, "minHeight", null),
+        "maxHeight": readNodeProperty(selection, "maxHeight", null),
+        "layoutWrap": getLayoutWrap(selection),
+        "counterAxisSpacing": getCounterAxisSpacing(selection),
         "itemSpacing": readAutoLayoutNumber(selection, "itemSpacing", 0),
         "paddingLeft": readAutoLayoutNumber(selection, "paddingLeft", 0),
         "paddingRight": readAutoLayoutNumber(selection, "paddingRight", 0),

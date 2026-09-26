@@ -534,15 +534,18 @@ export async function promoteSingleBooleanChild(
 // carries the solid, inner EXCLUDE carries none). The outer paint also wins
 // when the inner boolean has a different fill, as in the 0915 ellipsis icon.
 function applyOuterBooleanPaint(child: SceneNode, data: any) {
-    if (child.type !== "BOOLEAN_OPERATION") return;
+    if (!("fills" in child) || !("strokes" in child)) return;
     const geometry = data && data.geometry;
     const outerFills = geometry && geometry.fills;
-    if (!Array.isArray(outerFills) || !outerFills.some((f: any) => f && f.visible !== false)) return;
-    safeSetFills(child, normalizeImageFills(outerFills, child, data.layout));
+    if (!geometry) return;
+    if (Array.isArray(outerFills) && outerFills.some((f: any) => f && f.visible !== false)) {
+        safeSetFills(child, normalizeImageFills(outerFills, child, data.layout));
+    }
     const outerStrokes = geometry.strokes;
     if (Array.isArray(outerStrokes) && outerStrokes.length > 0) {
         safeSetStrokes(child, normalizeImageStrokes(outerStrokes, child, data.layout));
         if (geometry.strokeWeight !== undefined) safeSet(child, "strokeWeight", geometry.strokeWeight);
+        if (geometry.strokeAlign !== undefined) safeSet(child, "strokeAlign", geometry.strokeAlign);
     }
 }
 

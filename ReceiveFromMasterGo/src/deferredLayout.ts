@@ -24,7 +24,7 @@ export async function applyDeferredLayoutRestores(progress?: PostprocessProgress
 
     const records = state.deferredLayoutRestores;
     state.deferredLayoutRestores = [];
-    const total = Math.max(1, records.length * 3);
+    const total = Math.max(1, records.length * 5);
     let done = 0;
     let lastYieldAt = Date.now();
 
@@ -38,6 +38,21 @@ export async function applyDeferredLayoutRestores(progress?: PostprocessProgress
         done++;
         lastYieldAt = await maybeYieldPostprocess(done, total, lastYieldAt, progress);
     }
+    for (const record of records) {
+        finalizeDeferredAutoLayout(record);
+        done++;
+        lastYieldAt = await maybeYieldPostprocess(done, total, lastYieldAt, progress);
+    }
+    // Auto-layout activation temporarily changes parent bounds. Re-establish
+    // source insets after all parent sizes settle, rather than preserving the
+    // accidental stretch introduced while the tree was being assembled.
+    for (const record of records) {
+        restoreAbsoluteStretchBox(record);
+        done++;
+        lastYieldAt = await maybeYieldPostprocess(done, total, lastYieldAt, progress);
+    }
+    // Stretch correction can resize an inner fixed auto-layout frame through
+    // Figma constraints. Reapply its explicit size (e.g. fixed-height bar rows).
     for (const record of records) {
         finalizeDeferredAutoLayout(record);
         done++;
@@ -73,8 +88,18 @@ export function normalizeLayoutAlign(value: any): string {
     return normalizeAxisAlign(value);
 }
 
+// MasterGo keeps the stored aligned box for absolute auto-layout labels even
+// when marked AUTO. Figma hugs away its leading space and shifts all glyphs.
+export function preserveAbsoluteAlignedBox(layout: any): any {
+    if (layout.layoutPositioning !== "ABSOLUTE" ||
+        normalizeAxisAlign(layout.primaryAxisAlignItems) !== "MAX" ||
+        normalizeAxisSizingMode(layout.primaryAxisSizingMode) !== "AUTO") return layout;
+    return { ...layout, primaryAxisSizingMode: "FIXED" };
+}
+
 function applyDeferredNodeAutoLayout(record: { node: SceneNode; layout: any; isGroup: boolean }) {
-    const { node, layout, isGroup } = record;
+    const { node, isGroup } = record;
+    const layout = preserveAbsoluteAlignedBox(record.layout);
     if (isRemovedNode(node) || isGroup || !("layoutMode" in node)) return;
 
     let applied = false;
@@ -84,7 +109,12 @@ function applyDeferredNodeAutoLayout(record: { node: SceneNode; layout: any; isG
         applied = true;
     }
 
+    for (const key of ["minWidth", "maxWidth", "minHeight", "maxHeight"]) {
+        if (layout[key] !== undefined && key in node) safeSet(node, key, layout[key]);
+    }
     if (hasAutoLayout(node)) {
+        if (layout.layoutWrap !== undefined) safeSet(node, "layoutWrap", layout.layoutWrap);
+        if (layout.counterAxisSpacing !== undefined) safeSet(node, "counterAxisSpacing", layout.counterAxisSpacing);
         if (layout.primaryAxisSizingMode) {
             safeSet(node, "primaryAxisSizingMode", normalizeAxisSizingMode(layout.primaryAxisSizingMode));
             applied = true;
@@ -178,7 +208,7 @@ function applyDeferredParentAutoLayout(record: { node: SceneNode; layout: any; i
 function finalizeDeferredAutoLayout(record: { node: SceneNode; layout: any; isGroup: boolean }) {
     const { node, isGroup } = record;
     if (isRemovedNode(node) || isGroup || !hasAutoLayout(node)) return;
-    const layout = normalizeDeferredLayoutForNativeGroupParent(node, record.layout);
+    const layout = preserveAbsoluteAlignedBox(normalizeDeferredLayoutForNativeGroupParent(node, record.layout));
     if (layout.width === undefined || layout.height === undefined || !shouldRestoreFixedSize(node, layout)) return;
 
     const mode = normalizeLayoutMode(layout.layoutMode || (node as any).layoutMode);
@@ -198,6 +228,25 @@ function finalizeDeferredAutoLayout(record: { node: SceneNode; layout: any; isGr
         if (layout.x !== undefined) safeSet(node, "x", layout.x);
         if (layout.y !== undefined) safeSet(node, "y", layout.y);
     }
+}
+
+export function absoluteStretchSize(layout: any, parentLayout: any, parent: any, constraints: any) {
+    if (layout.layoutPositioning !== "ABSOLUTE" || normalizeLayoutMode(layout.layoutMode) !== "NONE" || !parentLayout) return null;
+    const dimension = (axis: string, key: string) => {
+        if (constraints?.[axis] !== "STRETCH" || !Number.isFinite(layout[key]) || !Number.isFinite(parentLayout[key])) return null;
+        return Math.max(0.01, layout[key] + parent[key] - parentLayout[key]);
+    };
+    return { width: dimension("horizontal", "width"), height: dimension("vertical", "height") };
+}
+
+function restoreAbsoluteStretchBox(record: { node: SceneNode; layout: any; isGroup: boolean }) {
+    const { node, layout, isGroup } = record;
+    if (isRemovedNode(node) || isGroup || !("constraints" in node) || !node.parent) return;
+    const parent = node.parent as any;
+    const size = absoluteStretchSize(layout, state.restoredLayoutByNodeId[parent.id], parent, node.constraints);
+    if (!size || (size.width === null && size.height === null)) return;
+    safeResize(node, size.width ?? node.width, size.height ?? node.height);
+    if (hasFiniteRelativeTransform(layout)) safeSet(node, "relativeTransform", layout.relativeTransform);
 }
 
 function normalizeDeferredLayoutForNativeGroupParent(node: SceneNode, layout: any): any {
