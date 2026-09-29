@@ -1,3 +1,4 @@
+import { normalizeMasterGoSizeLimit } from "../../../shared/layoutLimits";
 import { cloneTransform } from "../../../shared/matrixUtils";
 import { normalizeMasterGoStrokeCapForFigma } from "../../../shared/connectorUtils";
 import { 
@@ -571,10 +572,10 @@ export function getUniversalProperty(selection: any, sourceType?: string, restor
             "height": readNodeProperty(selection, "height", 0),
             "constrainProportions": readNodeProperty(selection, "constrainProportions", false) || false,
             "layoutMode": getLayoutMode(selection as any),
-            "minWidth": readNodeProperty(selection, "minWidth", null),
-            "maxWidth": readNodeProperty(selection, "maxWidth", null),
-            "minHeight": readNodeProperty(selection, "minHeight", null),
-            "maxHeight": readNodeProperty(selection, "maxHeight", null),
+            "minWidth": normalizeMasterGoSizeLimit(readNodeProperty(selection, "minWidth", null)),
+            "maxWidth": normalizeMasterGoSizeLimit(readNodeProperty(selection, "maxWidth", null)),
+            "minHeight": normalizeMasterGoSizeLimit(readNodeProperty(selection, "minHeight", null)),
+            "maxHeight": normalizeMasterGoSizeLimit(readNodeProperty(selection, "maxHeight", null)),
             "layoutWrap": getLayoutWrap(selection),
             "counterAxisSpacing": getCounterAxisSpacing(selection),
             "itemSpacing": readAutoLayoutNumber(selection, "itemSpacing", 0),

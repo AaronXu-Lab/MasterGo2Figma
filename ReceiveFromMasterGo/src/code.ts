@@ -1,3 +1,4 @@
+import { normalizeMasterGoSizeLimit } from "../../shared/layoutLimits";
 import { restoreLegacyWrapLayout } from "./legacyWrapLayout";
 import { ImportLayerRecord, ImportManifest, ImportPageIndex, MissingFontTextRestoreResult } from "../../shared/types";
 import { state } from "./state";
@@ -1440,7 +1441,14 @@ async function applyInstanceChildOverrides(
   rescaled: boolean
 ): Promise<void> {
   const pairs: Array<{ node: SceneNode; rec: ImportLayerRecord }> = [];
-  const collect = (node: SceneNode, rec: ImportLayerRecord) => {
+  const collect = async (node: SceneNode, rec: ImportLayerRecord): Promise<void> => {
+    if (node.type === "INSTANCE" && rec.mainComponentId) {
+      const target = activeImportSession?.restoredNodeById[rec.mainComponentId];
+      if (target && target.type === "COMPONENT") {
+        const current = await node.getMainComponentAsync();
+        if (current?.id !== target.id) node.swapComponent(target);
+      }
+    }
     if (!("children" in node)) return;
     const childIds = rec.childIds || [];
     const children = (node as ChildrenMixin & SceneNode).children;
@@ -1449,12 +1457,15 @@ async function applyInstanceChildOverrides(
       const childRec = layers[childIds[i]];
       if (!childRec || !childRec.props) continue;
       pairs.push({ node: children[i], rec: childRec });
-      collect(children[i], childRec);
+      await collect(children[i], childRec);
     }
   };
-  collect(instance, record);
+  await collect(instance, record);
   for (const { node, rec } of pairs) {
     const props = rec.props;
+    if (node.type === "ELLIPSE" && props.arcData) {
+      try { node.arcData = props.arcData; } catch (error) { console.warn("[mg-instance] arc override rejected:", rec.id, error); }
+    }
     try {
       applyConnectorTextFallback(node, rec, layers);
     } catch (error) { /* instance sublayer name may not be overridable */ }
@@ -1591,9 +1602,10 @@ function flushInstanceChildLayoutOverrides(final: boolean): number {
       continue;
     }
     for (const key of INSTANCE_LAYOUT_OVERRIDE_KEYS) {
-      const want = entry.layout[key];
-      if (typeof want !== "number" || !isFinite(want)) continue;
-      if (Math.abs(node[key] - want) <= 0.01) continue;
+      const isLimit = /^(min|max)(Width|Height)$/.test(key);
+      const want = isLimit ? normalizeMasterGoSizeLimit(entry.layout[key]) : entry.layout[key];
+      if (want === undefined || (!isLimit && (typeof want !== "number" || !isFinite(want)))) continue;
+      if (node[key] === want || (typeof want === "number" && typeof node[key] === "number" && Math.abs(node[key] - want) <= 0.01)) continue;
       try {
         node[key] = want;
       } catch (error) {
@@ -1602,7 +1614,7 @@ function flushInstanceChildLayoutOverrides(final: boolean): number {
         continue;
       }
       // Assignment can be silently ignored on a locked sublayer — verify.
-      if (Math.abs(node[key] - want) > 0.01) {
+      if (want === null ? node[key] !== null : Math.abs(node[key] - want) > 0.01) {
         rejected++;
         console.warn("[mg-instance] auto-layout override did not stick:", node.name, key, "got", node[key], "wanted", want);
         continue;

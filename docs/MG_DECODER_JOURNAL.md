@@ -2033,3 +2033,59 @@ claim exact pixel equality. Tests 95/95; both builds pass.
 ### 2026-09-19：表单标签上移 5 px
 
 从 Figma `35:36661` 定位到原生 `3:43181/3:39831`：原始解码 y=0，模板继承后变成 -5，ZIP 为 0。原因是完整导出路径按轴继承遗漏值，没有区分“整个 transform 缺失”和“对象存在但零轴省略”。仅对真实 raw stub 保留对象中的零轴，合成子层继续原有回退；避免误改隐藏预填选项的约束位置。0920 geometry 166→157、transform 53→44、deep props 1609→1591；0806 geometry 182→180、transform 108→106、deep props 1272→1268。新增原生/缺失对象/合成子层回归测试。
+
+
+## 2026-09-29 · 0929 whole-page repair
+
+Initial native import contained only three of twelve roots. `libraryKey` was being
+used as a proxy for off-canvas ownership; byte cross-tabs instead isolated component
+metadata 07/05. Restoring the nine local published sets exposed their nested instances,
+so raw deep counts rose while missing records fell from 934 to zero. The remaining
+969 extra records were exhaustively traced to dependency roots marked libraryMaster.
+
+Nested slots required more than one template hop and suffix-aware override lookup.
+A first path-only fix regressed 0920/0806; checking both root and template suffixes
+restored their previous differences. Synthesized nodes must not win over real overrides.
+
+Real plugin imports then revealed importer bugs that props comparison cannot see:
+size limit 0 collapsed components to 1×1; instance ellipse overrides became pies;
+swapped icon components lost masks; a 90° STRETCH helper made the image card too tall.
+A direct diagnostic on a disposable imported page confirmed Figma rejects child
+`isMask` assignment. Therefore incompatible masked swaps use editable frame fallback.
+The card finally returned to 380×391.75 with its native 16:9 image; its white grid
+was present in the reference and was not a defect.
+
+Whole-page screenshots found two more native fields: omitted RECTANGLE height=1
+(26 gauge ticks) and outer ELLIPSE 02 arc corner radius (4/9999). The latter is not
+exposed in the old ZIP. A diagnostic vector network initially failed because inner
+arc segments were listed before the connecting radial segment; the contour ordering
+was corrected and covered by both positive/negative sweep tests. Editable vectors
+now reproduce rounded progress rings and gauge sectors. The diagnostic was removed.
+
+Finally, right-pinned header controls were forced to a template-width fixed box by
+a rule intended for left-overhanging labels. Restricting that rule and restoring
+absolute constraints after HUG/FILL convergence prevents right-edge overflow.
+
+Validation and exact fixture counts are recorded in MG_ZIP_PARITY_STATUS.md. Original
+mg/zip/image pages remain evidence; only actual plugin reimports count as render
+verification. Microsoft YaHei/DIN font warnings and renderer shadow differences are
+reported, not disguised by replacing the user's fonts or rasterizing content.
+
+
+### 同日 ZIP 续验
+
+原 ZIP 经相同接收端真实导入后，图标、图片比例和布局已恢复，残差集中在缺失字体、阴影
+与圆角端点。ArcData / EllipseNode 的当前 MasterGo typings 没有端点圆角字段；旧 ZIP
+也未携带该值。发送端新增 partial-ellipse 的 arcSvgMarkup 原生导出证据，等待用户手动
+重导出后再确认视口/镜像并接入 receiver。尚未把 SVG 直接交给 generic fallback，避免
+为补圆角引入拉伸或双重变换。新测试覆盖正负 sweep、整圆排除、证据保留与空导出回退。
+
+
+### 新 ZIP 实际导入闭环
+
+用户新版 ZIP 的 135 条 partial ellipse SVG 确认视口等于节点逻辑框；镜像节点的
+path 与 SVG transform 已烘焙宿主反射。接收端先在 SVG 内部施加逆反射，再恢复
+外层 source transform，避免双重翻转。保持 full-size 透明 Frame，路径保持可编辑，
+不在外层重放 fill/stroke。128 条适用，7 条节点透明度非 1 的记录保持普通 ellipse。
+所有 16 条圆角记录适用。真实插件导入页 1:24638 的圆角进度环/仪表盘已对照原图，
+饼图、环形图、跑道图亦复核；剩余字体与阴影差异如状态文档所列。115 个测试通过。

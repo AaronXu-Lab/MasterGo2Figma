@@ -1728,6 +1728,7 @@
                 if (++count >= 10) return meta;
               }
             } else if (tag === 0x05 || tag === 0x06 || tag === 0x08) {
+              if (tag === 0x05) meta.libraryCopy = bytes[p] === 1;
               p++;
             } else {
               return meta;
@@ -2392,8 +2393,9 @@
         // Older records can contain a damaged or partial scalar stream. Keep
         // the legacy readers only as a fallback; successful native parsing is
         // always authoritative and never mixes regex hits from float payloads.
-        const fallbackW = mgReadFloatTag(bytes, full, 0x0e, 0, scalEnd, fb);
-        const fallbackH = mgReadFloatTag(bytes, full, 0x0f, 0, scalEnd, fb);
+        const defaultSize = type === "RECTANGLE" && !scalar.templateRef && mk.recId.indexOf("/") < 0 ? 1 : 0;
+        const fallbackW = mgReadFloatTag(bytes, full, 0x0e, 0, scalEnd, fb) || defaultSize;
+        const fallbackH = mgReadFloatTag(bytes, full, 0x0f, 0, scalEnd, fb) || defaultSize;
         const fallbackXY = mgReadTransformXY(bytes, fb, fb + scalEnd);
         const transform = scalar.transform || fallbackXY;
         const w = scalar.present[0x0e] ? scalar.width : fallbackW;
@@ -2436,8 +2438,9 @@
           if (srm) textStyleRef = srm[1];
         }
         // ELLIPSE object `01 <obj>`: field 01 = sweep as a fraction of a full
-        // turn (omitted=+1, -1=clockwise full circle), field 02 = innerRadius.
+        // turn (omitted=+1, -1=clockwise full circle), field 02 = innerRadius, 03 = start in degrees.
         let arcData = null;
+        let arcCornerRadius;
         if (typeByte === 4) {
           if (bytes[fb + jt + 2] === 0x01) {
             arcData = { innerRadius: 0, startingAngle: 0, endingAngle: Math.PI * 2 };
@@ -2449,9 +2452,12 @@
               const r = mgReadZeroFloat(bytes, ap + 1);
               if (at === 0x01) arcData.endingAngle = r.value * Math.PI * 2;
               if (at === 0x02) arcData.innerRadius = r.value;
-              if (at === 0x03) arcData.startingAngle = r.value * Math.PI * 2;
+              if (at === 0x03) arcData.startingAngle = r.value * Math.PI / 180;
               ap = r.next;
             }
+            arcData.endingAngle += arcData.startingAngle;
+            // Outer ellipse field 02 follows the closed arc object.
+            if (bytes[ap] === 0 && bytes[ap + 1] === 2) arcCornerRadius = mgReadZeroFloat(bytes, ap + 2).value;
           }
         }
         // POLYGON (`1c 05`) / STAR (`1c 06`) objects (0712-3 specimen):
@@ -2518,7 +2524,7 @@
           blendModeByte: scalar.t0d,
           strokeJoinByte: scalar.t12, strokeAlignByte: scalar.t13,
           dashPattern: scalar.dashPattern || null,
-          trailer: trailer, textAutoResize: textAutoResize, arcData: arcData,
+          trailer: trailer, textAutoResize: textAutoResize, arcData: arcData, arcCornerRadius: arcCornerRadius,
           shapePointCount: shapePointCount, shapeInnerRadius: shapeInnerRadius,
           textAlignH: textAlignH, textAlignV: textAlignV, textStyleRef: textStyleRef
         };
@@ -3138,6 +3144,7 @@
         props.geometry.strokeLeftWeight = sideWeights[3];
       }
       if (t === "ELLIPSE") {
+        if (n.arcCornerRadius > 0) props.arcCornerRadius = n.arcCornerRadius * scale;
         const ellipseArc = n.arcData || { innerRadius: 0, startingAngle: 0, endingAngle: Math.PI * 2 };
         props.arcData = {
           innerRadius: ellipseArc.innerRadius,
@@ -4088,8 +4095,10 @@
         // whose geometry comes from the slot (= the component's natural size).
         let jobSlotId = job.slotId || null;
         let virtualComp = null;
-        if (!mgShareModeActive && comp && comp.containerMeta &&
-            comp.containerMeta.subtype === "INSTANCE" && comp.templateRef) {
+        const visitedSlots = new Set();
+        while (!mgShareModeActive && comp && comp.containerMeta &&
+            comp.containerMeta.subtype === "INSTANCE" && comp.templateRef && !visitedSlots.has(comp.id)) {
+          visitedSlots.add(comp.id);
           // Deep override chains hang off the parent MIRROR record, not off
           // the template slot — keep a mirror id passed by the parent job and
           // only fall back to the slot itself.
@@ -4156,20 +4165,20 @@
             // becomes unreachable. 大头针's `组 1136` has none, so the blue
             // recolor in `24:1747/24:0946` was never found and the map's
             // location marker imported with the component's black.
-            const rootKey = cur.rootPath + "/" + lastSegId;
             // Override records can be keyed at ANY depth of the template path
             // (0920: `3:30658/3:26786/3:11624` "商户" sits beside the
             // shallower `3:26786/3:11624` "已关闭"; `3:22167/3:10542` recolors
             // a vector whose walk path is `3:28657/3:22167`). Try the full
             // path first, then every shorter suffix, then the flat root key.
             {
-              const pathSegs = cur.tplPath.split("/");
               let picked = null;
-              for (let si = 0; si < pathSegs.length && !picked; si++) {
-                const key = pathSegs.slice(si).join("/") + "/" + lastSegId;
-                if (key !== childTplId && nodes[key]) picked = nodes[key];
+              for (const path of [cur.tplPath, cur.rootPath]) {
+                const pathSegs = path.split("/");
+                for (let si = 0; si < pathSegs.length && !picked; si++) {
+                  const key = pathSegs.slice(si).join("/") + "/" + lastSegId;
+                  if (key !== childTplId && nodes[key] && !nodes[key].isSynthesizedInstanceChild) picked = nodes[key];
+                }
               }
-              if (!picked && rootKey !== childTplId && nodes[rootKey]) picked = nodes[rootKey];
               if (picked) t = picked;
             }
             // Full-export bare override mirror: the record whose parent is the
@@ -4236,7 +4245,7 @@
                 instId: cloneId,
                 // Keep the override record's own path so deeper overrides
                 // (`3:30658/3:26786/3:11624`) stay reachable from the child job.
-                tplSide: (!bareOv && t !== nodes[childTplId] && t.id && t.id.indexOf("/") >= 0) ? t.id : lastSegId,
+                tplSide: (!bareOv && t !== nodes[childTplId] && t.id && t.id.indexOf("/") >= 0) ? t.id : (bareOv ? lastSegId : cloneId),
                 slotId: !mgShareModeActive ? (bareOv ? bareOv.id : childTplId) : undefined
               });
             } else {
@@ -4499,6 +4508,7 @@
           if (n.blendModeByte === undefined && t.blendModeByte !== undefined) n.blendModeByte = t.blendModeByte;
           if (!n.geomHash && t.geomHash) n.geomHash = t.geomHash;
           if (!n.arcData && t.arcData) n.arcData = t.arcData;
+          if (n.arcCornerRadius === undefined && t.arcCornerRadius !== undefined) n.arcCornerRadius = t.arcCornerRadius;
           if (n.textAutoResize == null && t.textAutoResize != null) n.textAutoResize = t.textAutoResize;
           if (n.characters == null && t.characters != null) n.characters = t.characters;
           if (!n.fontName && t.fontName) n.fontName = t.fontName;
@@ -4653,7 +4663,7 @@
     // type family, visibility, opacity, characters, fills/strokes (paint
     // override compare + IMAGE assetKey scan), boolean op, and a slim layout.
     // Dropped: vectorNetwork/vectorPaths (the whale), text runs, effects
-    // details beyond blend, constraints/sizing, stroke geometry, arcData.
+    // details beyond blend, constraints/sizing and stroke geometry.
     // Keep-list for instance-descendant records. It MUST cover every field
     // `applyInstanceChildOverrides` (code.ts) reads — visible / opacity /
     // characters / fills / strokes / auto-layout spacing. Anything dropped here
@@ -4668,6 +4678,7 @@
       const signatures = {};
       const active = {};
       const interned = new Map();
+      const rotatedStretch = {};
       for (const record of records) byId[record.id] = record;
       function signature(id) {
         if (signatures[id] !== undefined) return signatures[id];
@@ -4676,8 +4687,19 @@
         active[id] = true;
         const type = record.mainComponentId ? "FRAME" : record.props.type;
         const children = (record.childIds || []).map(signature);
+        const layout = record.props.layout || {};
+        const m = layout.relativeTransform;
+        rotatedStretch[id] = record.props.arcCornerRadius > 0 || (layout.layoutAlign === "STRETCH" && m &&
+          Math.abs(m[0][0]) < 1e-6 && Math.abs(m[1][1]) < 1e-6 &&
+          Math.abs(Math.abs(m[0][1]) - 1) < 1e-6 && Math.abs(Math.abs(m[1][0]) - 1) < 1e-6) ||
+          (record.childIds || []).some(cid => rotatedStretch[cid]);
         delete active[id];
-        const key = type + ":" + children.join(",");
+        // Swapping a masked nested instance resets isMask, which Figma does
+        // not allow overriding on instance children. A different masked
+        // component therefore requires an editable containing frame even
+        // when both components have identical child shapes.
+        const maskComponent = record.props.blend && record.props.blend.isMask && record.mainComponentId || "";
+        const key = type + ":" + children.join(",") + ":mask=" + maskComponent;
         if (!interned.has(key)) interned.set(key, interned.size);
         return signatures[id] = interned.get(key);
       }
@@ -4687,7 +4709,8 @@
         if (!master) continue;
         const actual = (record.childIds || []).map(signature);
         const expected = (master.childIds || []).map(signature);
-        if (actual.length !== expected.length || actual.some((value, index) => value !== expected[index])) {
+        if ((record.childIds || []).some(id => rotatedStretch[id]) ||
+            actual.length !== expected.length || actual.some((value, index) => value !== expected[index])) {
           record.instanceStructureFallback = true;
           count++;
         }
@@ -4716,6 +4739,8 @@
           if (props[key] !== undefined) slim[key] = props[key];
         }
       }
+      if (props.arcData !== undefined) slim.arcData = props.arcData;
+      if (props.arcCornerRadius !== undefined) slim.arcCornerRadius = props.arcCornerRadius;
       if (props.booleanOperation !== undefined) slim.booleanOperation = props.booleanOperation;
       if (props.shellPlaceholder !== undefined) slim.shellPlaceholder = props.shellPlaceholder;
       if (props.scence) slim.scence = props.scence;
@@ -4741,10 +4766,10 @@
       if (!isMaster) return true;
       // Synced library copies can retain their library's ordering code while
       // being owned by this page. This is the same off-canvas classification
-      // used for libraryMaster cleanup; exclude them BEFORE reachability so
-      // only actual references can bring them back. Nested canvas components
-      // and ordinary sort-coded local masters are not library copies.
-      return !!node.code && !(meta.libraryKey && !nodes[node.parent]);
+      // encoded by component metadata 07/05, not by a published libraryKey.
+      // Exclude synced copies before reachability; local published masters
+      // keep their canvas order even after the whole document is duplicated.
+      return !!node.code && !(meta.libraryCopy && !nodes[node.parent]);
     }
 
     // Retain only off-canvas masters actually needed by this page, including
@@ -4914,20 +4939,10 @@
         // ALL masters that way; editor exports of a library file still hold a
         // few codeless foreign masters, e.g. pasted icons). Keep sort-coded
         // local canvas masters (Tesla/0804 library documents), but exclude
-        // page-owned library-keyed copies even when they have a sort code
+        // page-owned synced copies (metadata 07/05=1) even when sort-coded
         // (09008). Referenced copies are added below as dependencies.
         const roots = (childIds[pg.id] || []).filter(r => mgIsPageRootNode(nodes[r], nodes));
-        // Library-master copies never appear in MasterGo's own page traversal
-        // (the importer removes them after re-linking), so they must not
-        // consume sibling indexes — the real canvas roots number consecutively.
-        let canvasIndex = 0;
-        const masterRoots = [];
-        for (const rootId of roots) {
-          const rootMeta = nodes[rootId] && nodes[rootId].containerMeta;
-          if (rootMeta && rootMeta.libraryKey) masterRoots.push(rootId);
-          else rootIndexOverride[rootId] = canvasIndex++;
-        }
-        for (const rootId of masterRoots) rootIndexOverride[rootId] = canvasIndex++;
+        roots.forEach((id, index) => { rootIndexOverride[id] = index; });
         let count = 0;
         for (const r of roots) for (const id of subtreeOf(r)) { if (!reachable[id]) { reachable[id] = true; count++; } }
         // Keep empty pages too: MasterGo files legitimately contain pages with
@@ -5076,18 +5091,9 @@
         // run's style ref point straight at style DEFINITION records. Values
         // are already materialized into props; the importer re-binds them to
         // the restored Figma styles.
-        // Off-canvas copy of a SHARED-LIBRARY component master (container
-        // field `07 03 <libraryFileId+nodeId>`). MasterGo's own page traversal
-        // never yields it, so it must not survive on the Figma canvas — but
-        // instances still need it to exist while they re-link, so it is
-        // restored normally and removed in the import's cleanup phase.
-        // Off-canvas registry masters are PAGE-OWNED roots (parent = the page
-        // owner token, unresolvable in `nodes`). A library-keyed component
-        // nested inside a real frame is genuine canvas content — 临时测试's
-        // 组 16567 sits inside 首页/正 and was deleted from the canvas when the
-        // key alone set the flag (the importer removes flagged roots after
-        // instances re-link).
-        if (dependencyRoots[id] || (n.containerMeta && n.containerMeta.libraryKey && !nodes[n.parent])) record.libraryMaster = true;
+        // Only dependency roots added outside canvas reachability are temporary.
+        // A published local canvas master can also carry a library key (0929).
+        if (dependencyRoots[id]) record.libraryMaster = true;
         // Trailer flag `1e 01` = MasterGo renders the mask's own fill (record
         // level, invisible to the comparator). Cross-tab over 0806 + 临时测试:
         // both proven-painted masks (tab-bar 圆形 865) carry it, both
@@ -5357,6 +5363,7 @@
     convertMgPackageToV2Entries: convertMgPackageToV2Entries,
     __test: {
       inheritFromTemplate: mgInheritFromTemplate,
+      expandTemplateInstances: mgExpandTemplateInstances,
       resolveInstanceVisibility: mgResolveInstanceVisibility,
       shouldInheritStroke: mgShouldInheritStroke,
       decodeNativeNodes: mgDecodeNativeNodes,

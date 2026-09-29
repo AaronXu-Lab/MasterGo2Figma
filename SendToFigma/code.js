@@ -321,6 +321,13 @@
     return getRuleRestoreType(sourceType);
   }
 
+  // ../shared/layoutLimits.ts
+  function normalizeMasterGoSizeLimit(value) {
+    if (value === void 0) return void 0;
+    if (value === null || value === 0) return null;
+    return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : void 0;
+  }
+
   // ../shared/matrixUtils.ts
   function cloneTransform(transform) {
     if (!transform || !Array.isArray(transform) || transform.length < 2) {
@@ -1010,10 +1017,10 @@
         "height": readNodeProperty(selection, "height", 0),
         "constrainProportions": readNodeProperty(selection, "constrainProportions", false) || false,
         "layoutMode": getLayoutMode(selection),
-        "minWidth": readNodeProperty(selection, "minWidth", null),
-        "maxWidth": readNodeProperty(selection, "maxWidth", null),
-        "minHeight": readNodeProperty(selection, "minHeight", null),
-        "maxHeight": readNodeProperty(selection, "maxHeight", null),
+        "minWidth": normalizeMasterGoSizeLimit(readNodeProperty(selection, "minWidth", null)),
+        "maxWidth": normalizeMasterGoSizeLimit(readNodeProperty(selection, "maxWidth", null)),
+        "minHeight": normalizeMasterGoSizeLimit(readNodeProperty(selection, "minHeight", null)),
+        "maxHeight": normalizeMasterGoSizeLimit(readNodeProperty(selection, "maxHeight", null)),
         "layoutWrap": getLayoutWrap(selection),
         "counterAxisSpacing": getCounterAxisSpacing(selection),
         "itemSpacing": readAutoLayoutNumber(selection, "itemSpacing", 0),
@@ -1773,6 +1780,20 @@
       nodeJson.vectorFallback = "svgMissingRegions";
     });
   }
+  function needsEllipseArcSvg(nodeJson) {
+    if ((nodeJson == null ? void 0 : nodeJson.sourceType) !== "ELLIPSE" || !nodeJson.arcData) return false;
+    const { startingAngle, endingAngle } = nodeJson.arcData;
+    if (!Number.isFinite(startingAngle) || !Number.isFinite(endingAngle)) return false;
+    const sweep = Math.abs(endingAngle - startingAngle);
+    return sweep > 1e-8 && sweep < Math.PI * 2 - 1e-6;
+  }
+  function enrichEllipseArcExport(node, nodeJson) {
+    return __async(this, null, function* () {
+      if (!needsEllipseArcSvg(nodeJson)) return;
+      const svg = yield tryExportSvgMarkup(node, "Ellipse arc");
+      if (svg) nodeJson.arcSvgMarkup = svg;
+    });
+  }
   var RADIAL_TRUTH_MAX_SUBTREE_NODES = 40;
   var RADIAL_TRUTH_MAX_SVG_BYTES = 2 * 1024 * 1024;
   function applySvgRadialTruth(jsonPaints, rawPaints, gradients, width, height) {
@@ -1963,6 +1984,8 @@
         yield enrichBooleanOperationExport(node, nodeJson, childNodes);
         setNodeDebug("enrich-vector");
         yield enrichFilledVectorExport(node, nodeJson);
+        setNodeDebug("enrich-ellipse-arc");
+        yield enrichEllipseArcExport(node, nodeJson);
         setNodeDebug("enrich-radial-gradient");
         yield enrichRadialGradientTruth(node, nodeJson);
         setNodeDebug("override-layout");

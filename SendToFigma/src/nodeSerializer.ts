@@ -266,6 +266,25 @@ export async function enrichFilledVectorExport(node: SceneNode, nodeJson: any) {
     nodeJson.vectorFallback = "svgMissingRegions";
 }
 
+// MasterGo's public ArcData omits its rendered endpoint corner radius.
+// Keep the native SVG alongside the editable arc properties so the receiver
+// can recover that geometry without guessing from the layer name or colour.
+// Do not enable generic SVG fallback here: exported viewports may be padded
+// or mirrored, and must be reconciled with the original local layout first.
+export function needsEllipseArcSvg(nodeJson: any): boolean {
+    if (nodeJson?.sourceType !== "ELLIPSE" || !nodeJson.arcData) return false;
+    const { startingAngle, endingAngle } = nodeJson.arcData;
+    if (!Number.isFinite(startingAngle) || !Number.isFinite(endingAngle)) return false;
+    const sweep = Math.abs(endingAngle - startingAngle);
+    return sweep > 1e-8 && sweep < Math.PI * 2 - 1e-6;
+}
+
+export async function enrichEllipseArcExport(node: SceneNode, nodeJson: any): Promise<void> {
+    if (!needsEllipseArcSvg(nodeJson)) return;
+    const svg = await tryExportSvgMarkup(node, "Ellipse arc");
+    if (svg) nodeJson.arcSvgMarkup = svg;
+}
+
 // Replace radial-gradient transforms with the render truth recovered from the
 // node's SVG export. MasterGo's API paint.transform is built from the FOLDED
 // axis ratio min(r, 2·|major|/r) and disagrees with the renderer whenever
@@ -526,6 +545,9 @@ export async function collectSingleNodeExport(
 
         setNodeDebug("enrich-vector");
         await enrichFilledVectorExport(node, nodeJson);
+
+        setNodeDebug("enrich-ellipse-arc");
+        await enrichEllipseArcExport(node, nodeJson);
 
         setNodeDebug("enrich-radial-gradient");
         await enrichRadialGradientTruth(node, nodeJson);

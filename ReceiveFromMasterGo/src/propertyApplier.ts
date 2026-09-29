@@ -1,3 +1,5 @@
+import { localEllipseArcSvg } from "./appliers/ellipseArcSvg";
+import { roundedArcNetwork } from "./appliers/roundedArc";
 import { applyUniversalProperties } from "./appliers/universal";
 import { applyTextProperties } from "./appliers/text";
 import { getFixedMixedTextLines } from "./appliers/multilineText";
@@ -9,7 +11,13 @@ import { safeSet } from "../../shared/utils";
 export async function applyProperties(node: any, data: any) {
     if (!node || !data) return;
 
-    await applyUniversalProperties(node, data);
+    // The SVG children already carry native fills and outlined strokes.
+    // Keep the full-size wrapper transparent; painting it would fill the hole.
+    const arcSvgWrapper = node.type === "FRAME" && localEllipseArcSvg(data);
+    await applyUniversalProperties(node, arcSvgWrapper
+        ? { ...data, geometry: { fills: [], strokes: [], strokeWeight: 0 }, clipsContent: false }
+        : data);
+    if (arcSvgWrapper) node.clipsContent = false;
 
     const fixedLines = node.type === "FRAME" ? getFixedMixedTextLines(data) : null;
     if (fixedLines) {
@@ -31,6 +39,9 @@ export async function applyProperties(node: any, data: any) {
             line.y = index * data.lineHeight.value;
         }
     }
+
+    const arcNetwork = node.type === "VECTOR" ? roundedArcNetwork(data) : null;
+    if (arcNetwork) await applyVectorNetwork(node, arcNetwork, { ...data, vectorAutoLayoutBox: true });
 
     // SVG fallback supplies the missing regions and rounded path geometry.
     // Replaying the incomplete source network would erase those again.

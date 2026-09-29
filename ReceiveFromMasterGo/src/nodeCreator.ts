@@ -1,3 +1,5 @@
+import { localEllipseArcSvg } from "./appliers/ellipseArcSvg";
+import { roundedArcNetwork } from "./appliers/roundedArc";
 import { state } from "./state";
 import { getReceiveCreateType } from "./layerRules";
 import { safeSet, isSceneNode, yieldToEventLoop } from "../../shared/utils";
@@ -179,6 +181,9 @@ export async function createNodeFromData(data: any): Promise<SceneNode | null> {
                 node = vector;
                 break;
             case "ELLIPSE":
+                const arcSvg = localEllipseArcSvg(data);
+                if (arcSvg) { node = figma.createNodeFromSvg(arcSvg); break; }
+                if (roundedArcNetwork(data)) { node = figma.createVector(); break; }
                 const ellipse = figma.createEllipse();
                 node = ellipse;
                 if (data.arcData) safeSet(ellipse, "arcData", data.arcData);

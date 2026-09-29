@@ -40,6 +40,13 @@
     });
   };
 
+  // ../shared/layoutLimits.ts
+  function normalizeMasterGoSizeLimit(value) {
+    if (value === void 0) return void 0;
+    if (value === null || value === 0) return null;
+    return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : void 0;
+  }
+
   // src/legacyWrapLayout.ts
   function restoreLegacyWrapLayout(layers) {
     let restored = 0;
@@ -1077,7 +1084,7 @@ ${style}`;
       if (state.deferredLayoutRestores.length === 0) return;
       const records = state.deferredLayoutRestores;
       state.deferredLayoutRestores = [];
-      const total = Math.max(1, records.length * 5);
+      const total = Math.max(1, records.length * 6);
       let done = 0;
       let lastYieldAt = Date.now();
       for (const record of records) {
@@ -1102,6 +1109,11 @@ ${style}`;
       }
       for (const record of records) {
         finalizeDeferredAutoLayout(record);
+        done++;
+        lastYieldAt = yield maybeYieldPostprocess(done, total, lastYieldAt, progress);
+      }
+      for (const record of records) {
+        restoreAbsoluteConstrainedPosition(record);
         done++;
         lastYieldAt = yield maybeYieldPostprocess(done, total, lastYieldAt, progress);
       }
@@ -1131,7 +1143,7 @@ ${style}`;
     return normalizeAxisAlign(value);
   }
   function preserveAbsoluteAlignedBox(layout) {
-    if (layout.layoutPositioning !== "ABSOLUTE" || normalizeAxisAlign(layout.primaryAxisAlignItems) !== "MAX" || normalizeAxisSizingMode(layout.primaryAxisSizingMode) !== "AUTO") return layout;
+    if (layout.layoutPositioning !== "ABSOLUTE" || !(layout.x < 0) || normalizeAxisAlign(layout.primaryAxisAlignItems) !== "MAX" || normalizeAxisSizingMode(layout.primaryAxisSizingMode) !== "AUTO") return layout;
     return __spreadProps(__spreadValues({}, layout), { primaryAxisSizingMode: "FIXED" });
   }
   function applyDeferredNodeAutoLayout(record) {
@@ -1144,7 +1156,8 @@ ${style}`;
       applied = true;
     }
     for (const key of ["minWidth", "maxWidth", "minHeight", "maxHeight"]) {
-      if (layout[key] !== void 0 && key in node) safeSet(node, key, layout[key]);
+      const limit = normalizeMasterGoSizeLimit(layout[key]);
+      if (limit !== void 0 && key in node) safeSet(node, key, limit);
     }
     if (hasAutoLayout(node)) {
       if (layout.layoutWrap !== void 0) safeSet(node, "layoutWrap", layout.layoutWrap);
@@ -1211,7 +1224,7 @@ ${style}`;
       applied = true;
     }
     if (layout.layoutAlign) {
-      safeSet(node, "layoutAlign", normalizeLayoutAlign(layout.layoutAlign));
+      safeSet(node, "layoutAlign", rotatedStretchSize(layout, node.parent) ? "INHERIT" : normalizeLayoutAlign(layout.layoutAlign));
       applied = true;
     }
     if (layout.layoutGrow !== void 0) {
@@ -1239,21 +1252,47 @@ ${style}`;
     if (isRemovedNode(node) || isGroup || !hasAutoLayout(node)) return;
     const layout = preserveAbsoluteAlignedBox(normalizeDeferredLayoutForNativeGroupParent(node, record.layout));
     if (layout.width === void 0 || layout.height === void 0 || !shouldRestoreFixedSize(node, layout)) return;
+    const rotated = rotatedStretchSize(layout, node.parent);
+    if (rotated) {
+      safeSet(node, "layoutAlign", "INHERIT");
+      safeSet(node, "primaryAxisSizingMode", "FIXED");
+      safeSet(node, "counterAxisSizingMode", "FIXED");
+      safeResize(node, rotated.width, rotated.height);
+      return;
+    }
     const mode = normalizeLayoutMode(layout.layoutMode || node.layoutMode);
     const primaryFixed = normalizeAxisSizingMode(layout.primaryAxisSizingMode || node.primaryAxisSizingMode) === "FIXED";
     const counterFixed = normalizeAxisSizingMode(layout.counterAxisSizingMode || node.counterAxisSizingMode) === "FIXED";
     const horizontalPrimary = mode === "HORIZONTAL";
     const widthFixed = horizontalPrimary ? primaryFixed : counterFixed;
     const heightFixed = horizontalPrimary ? counterFixed : primaryFixed;
-    safeResize(node, widthFixed ? layout.width : node.width, heightFixed ? layout.height : node.height);
+    const parentMode = hasAutoLayoutParent(node) && layout.layoutPositioning !== "ABSOLUTE" ? node.parent.layoutMode : "NONE";
+    const fillWidth = parentMode === "VERTICAL" && layout.layoutAlign === "STRETCH" || parentMode === "HORIZONTAL" && layout.layoutGrow === 1;
+    const fillHeight = parentMode === "HORIZONTAL" && layout.layoutAlign === "STRETCH" || parentMode === "VERTICAL" && layout.layoutGrow === 1;
+    safeResize(node, widthFixed && !fillWidth ? layout.width : node.width, heightFixed && !fillHeight ? layout.height : node.height);
     if (layout.primaryAxisSizingMode) safeSet(node, "primaryAxisSizingMode", normalizeAxisSizingMode(layout.primaryAxisSizingMode));
     if (layout.counterAxisSizingMode) safeSet(node, "counterAxisSizingMode", normalizeAxisSizingMode(layout.counterAxisSizingMode));
+    if (parentMode !== "NONE") {
+      if (layout.layoutAlign !== void 0) safeSet(node, "layoutAlign", normalizeLayoutAlign(layout.layoutAlign));
+      if (layout.layoutGrow !== void 0) safeSet(node, "layoutGrow", layout.layoutGrow);
+    }
     if (hasFiniteRelativeTransform(layout)) {
       safeSet(node, "relativeTransform", layout.relativeTransform);
     } else {
       if (layout.x !== void 0) safeSet(node, "x", layout.x);
       if (layout.y !== void 0) safeSet(node, "y", layout.y);
     }
+  }
+  function rotatedStretchSize(layout, parent) {
+    const m = layout.relativeTransform;
+    if (layout.layoutAlign !== "STRETCH" || layout.layoutPositioning === "ABSOLUTE" || !m || Math.abs(m[0][0]) > 1e-6 || Math.abs(m[1][1]) > 1e-6 || Math.abs(Math.abs(m[0][1]) - 1) > 1e-6 || Math.abs(Math.abs(m[1][0]) - 1) > 1e-6 || !Number.isFinite(layout.width) || !Number.isFinite(layout.height)) return null;
+    if ((parent == null ? void 0 : parent.layoutMode) === "VERTICAL") {
+      return { width: Math.max(0.01, parent.width - (parent.paddingLeft || 0) - (parent.paddingRight || 0)), height: layout.height };
+    }
+    if ((parent == null ? void 0 : parent.layoutMode) === "HORIZONTAL") {
+      return { width: layout.width, height: Math.max(0.01, parent.height - (parent.paddingTop || 0) - (parent.paddingBottom || 0)) };
+    }
+    return null;
   }
   function absoluteStretchSize(layout, parentLayout, parent, constraints) {
     if (layout.layoutPositioning !== "ABSOLUTE" || normalizeLayoutMode(layout.layoutMode) !== "NONE" || !parentLayout) return null;
@@ -1262,6 +1301,26 @@ ${style}`;
       return Math.max(0.01, layout[key] + parent[key] - parentLayout[key]);
     };
     return { width: dimension("horizontal", "width"), height: dimension("vertical", "height") };
+  }
+  function absoluteConstrainedPosition(layout, parentLayout, parent, node) {
+    var _a;
+    if (layout.layoutPositioning !== "ABSOLUTE" || !parentLayout) return null;
+    const result = {};
+    for (const [axis, size, position] of [["horizontal", "width", "x"], ["vertical", "height", "y"]]) {
+      if (![layout[position], layout[size], parentLayout[size], parent[size], node[size]].every(Number.isFinite)) continue;
+      const constraint = (_a = node.constraints) == null ? void 0 : _a[axis];
+      const delta = parent[size] - parentLayout[size] - (node[size] - layout[size]);
+      if (constraint === "MAX") result[position] = layout[position] + delta;
+      if (constraint === "CENTER") result[position] = layout[position] + delta / 2;
+    }
+    return result;
+  }
+  function restoreAbsoluteConstrainedPosition(record) {
+    const { node, layout, isGroup } = record;
+    if (isRemovedNode(node) || isGroup || !node.parent) return;
+    const position = absoluteConstrainedPosition(layout, state.restoredLayoutByNodeId[node.parent.id], node.parent, node);
+    if ((position == null ? void 0 : position.x) !== void 0) safeSet(node, "x", position.x);
+    if ((position == null ? void 0 : position.y) !== void 0) safeSet(node, "y", position.y);
   }
   function restoreAbsoluteStretchBox(record) {
     var _a, _b;
@@ -1362,6 +1421,83 @@ ${style}`;
       } catch (e) {
       }
     }
+  }
+
+  // src/appliers/ellipseArcSvg.ts
+  function localEllipseArcSvg(data) {
+    var _a, _b, _c, _d, _e, _f, _g, _h;
+    if ((data == null ? void 0 : data.sourceType) !== "ELLIPSE" || typeof data.arcSvgMarkup !== "string") return null;
+    if (((_b = (_a = data.blend) == null ? void 0 : _a.opacity) != null ? _b : 1) !== 1 || ((_d = (_c = data.blend) == null ? void 0 : _c.effects) == null ? void 0 : _d.length)) return null;
+    const svg = data.arcSvgMarkup;
+    const outer = svg.match(/^\s*<svg\b([^>]*)>([\s\S]*)<\/svg>\s*$/i);
+    if (!outer || /<(?:image|filter|mask|clipPath)\b/i.test(svg)) return null;
+    const view = outer[1].match(/\bviewBox\s*=\s*["']([^"']+)["']/i);
+    const box = view == null ? void 0 : view[1].trim().split(/[\s,]+/).map(Number);
+    const layout = data.layout;
+    const m = layout == null ? void 0 : layout.relativeTransform;
+    if (!box || box.length !== 4 || !box.every(Number.isFinite) || box[0] !== 0 || box[1] !== 0 || !Number.isFinite(layout == null ? void 0 : layout.width) || !Number.isFinite(layout == null ? void 0 : layout.height) || Math.abs(box[2] - layout.width) > 0.01 || Math.abs(box[3] - layout.height) > 0.01 || !(box[2] > 0) || !(box[3] > 0) || !m || ![(_e = m[0]) == null ? void 0 : _e[0], (_f = m[0]) == null ? void 0 : _f[1], (_g = m[1]) == null ? void 0 : _g[0], (_h = m[1]) == null ? void 0 : _h[1]].every(Number.isFinite) || Math.abs(m[0][1]) > 1e-6 || Math.abs(m[1][0]) > 1e-6 || Math.abs(Math.abs(m[0][0]) - 1) > 1e-6 || Math.abs(Math.abs(m[1][1]) - 1) > 1e-6) return null;
+    const sx = m[0][0] < 0 ? -1 : 1, sy = m[1][1] < 0 ? -1 : 1;
+    const tx = sx < 0 ? box[2] : 0, ty = sy < 0 ? box[3] : 0;
+    return `<svg${outer[1]}><g transform="matrix(${sx},0,0,${sy},${tx},${ty})">${outer[2]}</g></svg>`;
+  }
+
+  // src/appliers/roundedArc.ts
+  function roundedArcNetwork(data) {
+    var _a, _b;
+    const arc = data.arcData;
+    const radius = Number(data.arcCornerRadius);
+    const width = Number((_a = data.layout) == null ? void 0 : _a.width), height = Number((_b = data.layout) == null ? void 0 : _b.height);
+    if (!arc || !(radius > 0) || !(width > 0) || !(height > 0)) return null;
+    const sweep = arc.endingAngle - arc.startingAngle;
+    if (!Number.isFinite(sweep) || Math.abs(sweep) < 1e-8 || Math.abs(sweep) >= Math.PI * 2 - 1e-6) return null;
+    const vertices = [], segments = [];
+    const cx = width / 2, cy = height / 2;
+    const point = (a, scale) => ({ x: cx + cx * scale * Math.cos(a), y: cy + cy * scale * Math.sin(a) });
+    const add = (p, cornerRadius = 0) => {
+      vertices.push(__spreadProps(__spreadValues({}, p), { cornerRadius }));
+      return vertices.length - 1;
+    };
+    const line = (start, end) => segments.push({ start, end });
+    const curve = (startAngle, delta, scale) => {
+      const count = Math.ceil(Math.abs(delta) / (Math.PI / 2));
+      const step = delta / count;
+      let previous = add(point(startAngle, scale), radius);
+      const first = previous;
+      for (let i = 1; i <= count; i++) {
+        const a = startAngle + step * (i - 1), b = startAngle + step * i;
+        const next = add(point(b, scale), i === count ? radius : 0);
+        const k = 4 / 3 * Math.tan(step / 4);
+        segments.push({
+          start: previous,
+          end: next,
+          tangentStart: { x: -cx * scale * Math.sin(a) * k, y: cy * scale * Math.cos(a) * k },
+          tangentEnd: { x: cx * scale * Math.sin(b) * k, y: -cy * scale * Math.cos(b) * k }
+        });
+        previous = next;
+      }
+      return [first, previous];
+    };
+    const outer = curve(arc.startingAngle, sweep, 1);
+    let loop;
+    const outerCount = segments.length;
+    if (arc.innerRadius > 0) {
+      const inner = curve(arc.endingAngle, -sweep, arc.innerRadius);
+      const curveCount = segments.length;
+      line(outer[1], inner[0]);
+      line(inner[1], outer[0]);
+      loop = [
+        ...Array(outerCount).keys(),
+        curveCount,
+        ...Array.from({ length: curveCount - outerCount }, (_, i) => outerCount + i)
+      ];
+      loop.push(curveCount + 1);
+    } else {
+      const center = add({ x: cx, y: cy }, radius);
+      line(outer[1], center);
+      line(center, outer[0]);
+      loop = segments.map((_, i) => i);
+    }
+    return { vertices, segments, regions: [{ windingRule: "NONZERO", loops: [loop] }] };
   }
 
   // ../shared/vectorUtils.ts
@@ -1670,6 +1806,15 @@ ${style}`;
             node = vector;
             break;
           case "ELLIPSE":
+            const arcSvg = localEllipseArcSvg(data);
+            if (arcSvg) {
+              node = figma.createNodeFromSvg(arcSvg);
+              break;
+            }
+            if (roundedArcNetwork(data)) {
+              node = figma.createVector();
+              break;
+            }
             const ellipse = figma.createEllipse();
             node = ellipse;
             if (data.arcData) safeSet(ellipse, "arcData", data.arcData);
@@ -2238,7 +2383,9 @@ ${style}`;
     return __async(this, null, function* () {
       var _a, _b;
       if (!node || !data) return;
-      yield applyUniversalProperties(node, data);
+      const arcSvgWrapper = node.type === "FRAME" && localEllipseArcSvg(data);
+      yield applyUniversalProperties(node, arcSvgWrapper ? __spreadProps(__spreadValues({}, data), { geometry: { fills: [], strokes: [], strokeWeight: 0 }, clipsContent: false }) : data);
+      if (arcSvgWrapper) node.clipsContent = false;
       const fixedLines = node.type === "FRAME" ? getFixedMixedTextLines(data) : null;
       if (fixedLines) {
         const fills = node.fills;
@@ -2259,6 +2406,8 @@ ${style}`;
           line.y = index * data.lineHeight.value;
         }
       }
+      const arcNetwork = node.type === "VECTOR" ? roundedArcNetwork(data) : null;
+      if (arcNetwork) yield applyVectorNetwork(node, arcNetwork, __spreadProps(__spreadValues({}, data), { vectorAutoLayoutBox: true }));
       if (node.type === "VECTOR" && data.vectorNetwork && !data.svgFallback) {
         yield applyVectorNetwork(node, data.vectorNetwork, data);
         reapplyVectorStrokeGeometry(node, data);
@@ -3870,7 +4019,14 @@ ${style}`;
   function applyInstanceChildOverrides(instance, record, layers, rescaled) {
     return __async(this, null, function* () {
       const pairs = [];
-      const collect = (node, rec) => {
+      const collect = (node, rec) => __async(null, null, function* () {
+        if (node.type === "INSTANCE" && rec.mainComponentId) {
+          const target = activeImportSession == null ? void 0 : activeImportSession.restoredNodeById[rec.mainComponentId];
+          if (target && target.type === "COMPONENT") {
+            const current = yield node.getMainComponentAsync();
+            if ((current == null ? void 0 : current.id) !== target.id) node.swapComponent(target);
+          }
+        }
         if (!("children" in node)) return;
         const childIds = rec.childIds || [];
         const children = node.children;
@@ -3879,12 +4035,19 @@ ${style}`;
           const childRec = layers[childIds[i]];
           if (!childRec || !childRec.props) continue;
           pairs.push({ node: children[i], rec: childRec });
-          collect(children[i], childRec);
+          yield collect(children[i], childRec);
         }
-      };
-      collect(instance, record);
+      });
+      yield collect(instance, record);
       for (const { node, rec } of pairs) {
         const props = rec.props;
+        if (node.type === "ELLIPSE" && props.arcData) {
+          try {
+            node.arcData = props.arcData;
+          } catch (error) {
+            console.warn("[mg-instance] arc override rejected:", rec.id, error);
+          }
+        }
         try {
           applyConnectorTextFallback(node, rec, layers);
         } catch (error) {
@@ -3985,9 +4148,10 @@ ${style}`;
         continue;
       }
       for (const key of INSTANCE_LAYOUT_OVERRIDE_KEYS) {
-        const want = entry.layout[key];
-        if (typeof want !== "number" || !isFinite(want)) continue;
-        if (Math.abs(node[key] - want) <= 0.01) continue;
+        const isLimit = /^(min|max)(Width|Height)$/.test(key);
+        const want = isLimit ? normalizeMasterGoSizeLimit(entry.layout[key]) : entry.layout[key];
+        if (want === void 0 || !isLimit && (typeof want !== "number" || !isFinite(want))) continue;
+        if (node[key] === want || typeof want === "number" && typeof node[key] === "number" && Math.abs(node[key] - want) <= 0.01) continue;
         try {
           node[key] = want;
         } catch (error) {
@@ -3995,7 +4159,7 @@ ${style}`;
           console.warn("[mg-instance] auto-layout override rejected:", node.name, key, error);
           continue;
         }
-        if (Math.abs(node[key] - want) > 0.01) {
+        if (want === null ? node[key] !== null : Math.abs(node[key] - want) > 0.01) {
           rejected++;
           console.warn("[mg-instance] auto-layout override did not stick:", node.name, key, "got", node[key], "wanted", want);
           continue;

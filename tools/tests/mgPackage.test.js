@@ -280,7 +280,7 @@ test("instance-descendant slimming keeps every field the override matcher reads"
 });
 
 test("page roots exclude sort-coded synced library copies but preserve canvas components", () => {
-  const master = { type: "FRAME", parent: "page", code: "a1", containerMeta: { subtype: "COMPONENT_SET", libraryKey: "library+node" } };
+  const master = { type: "FRAME", parent: "page", code: "a1", containerMeta: { subtype: "COMPONENT_SET", libraryKey: "library+node", libraryCopy: true } };
   assert.equal(__test.isPageRootNode(master, {}), false);
   assert.equal(__test.isPageRootNode({ ...master, containerMeta: { subtype: "COMPONENT_SET" } }, {}), true);
   assert.equal(__test.isPageRootNode({ ...master, code: "", containerMeta: { subtype: "COMPONENT" } }, {}), false);
@@ -658,4 +658,76 @@ test("raw instance transform keeps an omitted axis at zero instead of inheriting
   assert.equal(absent.y, -5);
   assert.equal(absent.x, -129);
   assert.equal(synthesized.y, -5);
+});
+
+
+test('published canvas masters are distinct from synced library copies', () => {
+  for (const flag of [null, 0, 1]) {
+    const bytes = Buffer.concat([Buffer.from([7,3]), Buffer.from('file+9:1\0'),
+      Buffer.from(flag === null ? [0,0] : [5,flag,0,0])]);
+    const meta = __test.parseContainerMeta(bytes,0);
+    assert.equal(meta.libraryKey,'file+9:1');
+    assert.equal(__test.isPageRootNode({type:'FRAME',code:'a0',parent:'page',containerMeta:meta},{}),flag !== 1);
+  }
+});
+
+test('ellipse start is degrees and end is start plus fractional sweep', () => {
+  const bytes = Buffer.concat([Buffer.from('\x019:1\0\x03a0\0\x04Arc\0'),
+    // sweep .625, inner radius .5, start -90 degrees.
+    Buffer.from([0x1c,4,1,1,0x7e,0,0,0x40,2,0x7e,0,0,0,3,0x85,1,0,0x68,0,0,0x1d,1,0])]);
+  const arc = __test.decodeNativeNodes(bytes).nodes['9:1'].arcData;
+  assert.ok(Math.abs(arc.startingAngle + Math.PI/2) < 1e-8);
+  assert.ok(Math.abs(arc.endingAngle - Math.PI*0.75) < 1e-8);
+  assert.equal(arc.innerRadius,.5);
+});
+
+
+test('slim instance transport retains ellipse arc overrides', () => {
+  const arcData={startingAngle:-Math.PI/2,endingAngle:Math.PI/2,innerRadius:.8};
+  assert.deepEqual(__test.slimInstanceDescendantProps({type:'ELLIPSE',arcData}).arcData,arcData);
+});
+
+test('rotated stretch inside an instance retains editable full layout records', () => {
+  const layout={layoutAlign:'STRETCH',relativeTransform:[[0,-1,25],[1,0,0]]};
+  const records=[{id:'base',props:{type:'COMPONENT'},childIds:['a']},{id:'a',props:{type:'FRAME',layout},childIds:[]},
+    {id:'instance',mainComponentId:'base',props:{type:'FRAME'},childIds:['b']},{id:'b',props:{type:'FRAME',layout},childIds:[]}];
+  assert.equal(__test.markStructuralInstanceFallbacks(records),1);
+  assert.equal(records[2].instanceStructureFallback,true);
+});
+
+test('nested instance slots resolve through multiple template hops', () => {
+  const node=(id, subtype, templateRef, parent)=>({id,parent,type:'FRAME',rawType:'FRAME',containerMeta:{subtype},templateRef,w:24,h:24,x:0,y:0,code:'a0'});
+  const nodes={base:node('base','COMPONENT'), leaf:{id:'leaf',parent:'base',type:'RECTANGLE',w:24,h:24,x:0,y:0},
+    slot:node('slot','INSTANCE','base'), mirror:node('mirror','INSTANCE','slot'), copy:node('copy','INSTANCE','mirror')};
+  __test.expandTemplateInstances(nodes,{base:['leaf']});
+  assert.equal(nodes['copy/leaf'].parent,'copy');
+  assert.equal(nodes['copy/leaf'].type,'RECTANGLE');
+});
+
+test('swapped masked instance requires an editable containing frame', () => {
+  const records=[
+    {id:'base',props:{type:'COMPONENT'},childIds:['slot']},
+    {id:'slot',mainComponentId:'icon-a',props:{type:'FRAME',blend:{isMask:true}},childIds:[]},
+    {id:'instance',mainComponentId:'base',props:{type:'FRAME'},childIds:['replacement']},
+    {id:'replacement',mainComponentId:'icon-b',props:{type:'FRAME',blend:{isMask:true}},childIds:[]}
+  ];
+  assert.equal(__test.markStructuralInstanceFallbacks(records),1);
+  assert.equal(records[2].instanceStructureFallback,true);
+  records[3].mainComponentId='icon-a';
+  delete records[2].instanceStructureFallback;
+  assert.equal(__test.markStructuralInstanceFallbacks(records),0);
+});
+
+test('concrete rectangles default omitted dimensions to one but preserve explicit zero', () => {
+  for (const size of [[],[0x0f,0]]) {
+    const bytes=Buffer.concat([Buffer.from('\x019:1\0\x03a0\0\x04Tick\0'),Buffer.from(size),Buffer.from([0x1c,3,0,0,0x1d,1,0])]);
+    const node=__test.decodeNativeNodes(bytes).nodes['9:1'];
+    assert.equal(node.h,size.length ? 0 : 1);
+    assert.equal(node.w,1);
+  }
+});
+
+test('ellipse outer field two is its arc corner radius', () => {
+  const bytes=Buffer.concat([Buffer.from('\x019:1\0\x03a0\0\x04Arc\0'),Buffer.from([0x1c,4,1,0,2,0x81,0,0,0,0,0,0x1d,1,0])]);
+  assert.equal(__test.decodeNativeNodes(bytes).nodes['9:1'].arcCornerRadius,4);
 });

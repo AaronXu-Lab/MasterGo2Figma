@@ -739,8 +739,11 @@ byte↔char offsets, so regex indexes stay valid).
   count, then the run blob.
 - ELLIPSE `1c 04 01 <obj>`: **arcData** — field `01 <f>` = sweep as a fraction of a full turn
   (`-1` = clockwise full circle → −2π, omitted = +2π, `0.75` → 4.712…), field `02 <f>` =
-  innerRadius (0.4 verified), field `03` (unobserved) presumed startingAngle fraction. Every
-  ellipse gets arcData in v2.
+  innerRadius, field `03 <f>` = starting angle in **degrees** (0929: −90, −180, 90).
+  Convert start to radians; endingAngle = startingAngle + sweep × 2π. The outer ellipse
+  field `02 <f>`, after the arc object terminator, is **arc corner radius** (0929: 4 or
+  9999 for saturated rounding). It is distinct from generic cornerRadius, which the
+  MasterGo API reports as 0. Expose it as `arcCornerRadius`; every ellipse gets arcData in v2.
 - **POLYGON (`1c 05`) / STAR (`1c 06`)** (0712-3): field `01` = pointCount as a **zigzag
   varint** (3→06, 5→0a, 8→10; omitted = polygon 3 / star 5); STAR field `02 <f>` =
   innerRadius (omitted = 0.5).
@@ -1455,3 +1458,41 @@ mode overrides are not decoded by this default-mode rule.
 ### 2026-09-19：完整实例 transform 中的省略零轴
 
 完整导出的原生实例 stub 若有 `18` transform 对象，未出现的平移轴是零，不能继承 slot 的位置；只有整个 transform 缺失时才沿用 slot 坐标。合成实例子层继续保留原有 slot 回退。0920 表单标签 `3:43181/3:39831` 的 transform 仅写 x=-129，y 应为 0；此前继承母版 y=-5 导致标签上移。相同规则同时修复两个同类标签及六个文字子层。
+
+
+## 2026-09-29 · 0929 published masters, nested slots and arcs
+
+- Component metadata `1c 07 … 07 {… 05 <b> …}`: `05=1` identifies a synced
+  off-canvas library copy. A libraryKey alone does **not**: locally published canvas
+  components keep libraryKey after document duplication. Cross-tab: 0929 has nine
+  canvas sets without this flag and 51 off-canvas copies with it; 0920 has 139 and
+  0806 has 12 flagged off-canvas copies. Root reachability needs canvas ordering code,
+  then excludes flagged copies outside the node tree. Only dependency roots receive
+  `libraryMaster`; their children remain reachable until importer cleanup.
+- A nested INSTANCE slot can reference another INSTANCE slot. Follow the whole
+  templateRef chain with cycle protection. Explicit override lookup must consider
+  suffixes of both template and root paths; a synthesized clone is not an explicit
+  override. Carry the chosen explicit template id into nested jobs. Checking only the
+  full path regressed both older fixtures despite improving 0929.
+- Concrete, non-template RECTANGLE records omit scalar `0e/0f` when that dimension is
+  the default **1**, not 0. All 26 omitted heights in 0929 are 1 px gauge ticks in the
+  paired ZIP. Explicit zero stays zero; template and slash stubs retain inheritance.
+- Ellipse start and outer corner radius are specified above. 146 matched ellipses
+  previously had incorrect start/end; 16 records carry arcCornerRadius absent from
+  the old ZIP. 0806 contributes ten additional arcCornerRadius fields, with no other
+  new deep differences. The API's generic cornerRadius=0 cannot disprove this native
+  field; native PNGs confirm the rounded ends.
+- The UI slim path must retain arcData and arcCornerRadius. Instance child arcData
+  must be replayed in the importer. Rounded arcs use editable cubic vector networks
+  with endpoint radii and layout-box anchors; complete circles remain ellipses.
+- Structural fallback also covers descendants with rotated STRETCH layout, rounded
+  arcs, or a changed masked nested component. Figma cannot override `isMask` on an
+  instance child after swapComponent clears it. Preserve these enclosing subtrees
+  as editable frames, not raster images. Matching masked components keep instances.
+
+Importer interoperability: MasterGo min/max size 0 means unset (Figma null), including
+old ZIP files; the sender now normalizes new exports too. Deferred layout preserves
+live FILL axes when resizing a fixed axis, resolves quarter-turn logical stretching,
+and restores right/center absolute anchors after parent FILL and child HUG settle.
+Only left-overhanging absolute labels preserve their aligned source box; ordinary
+right-pinned HUG containers must not be forced to the template width.

@@ -1,3 +1,4 @@
+import { normalizeMasterGoSizeLimit } from "../../shared/layoutLimits";
 import { state } from "./state";
 import { safeSet, safeResize, isSceneNode, yieldToEventLoop } from "../../shared/utils";
 
@@ -24,7 +25,7 @@ export async function applyDeferredLayoutRestores(progress?: PostprocessProgress
 
     const records = state.deferredLayoutRestores;
     state.deferredLayoutRestores = [];
-    const total = Math.max(1, records.length * 5);
+    const total = Math.max(1, records.length * 6);
     let done = 0;
     let lastYieldAt = Date.now();
 
@@ -58,6 +59,11 @@ export async function applyDeferredLayoutRestores(progress?: PostprocessProgress
         done++;
         lastYieldAt = await maybeYieldPostprocess(done, total, lastYieldAt, progress);
     }
+    for (const record of records) {
+        restoreAbsoluteConstrainedPosition(record);
+        done++;
+        lastYieldAt = await maybeYieldPostprocess(done, total, lastYieldAt, progress);
+    }
 }
 
 function isRemovedNode(node: any): boolean {
@@ -88,10 +94,11 @@ export function normalizeLayoutAlign(value: any): string {
     return normalizeAxisAlign(value);
 }
 
-// MasterGo keeps the stored aligned box for absolute auto-layout labels even
-// when marked AUTO. Figma hugs away its leading space and shifts all glyphs.
+// MasterGo keeps the stored aligned box for labels extending left of their
+// anchor even when marked AUTO; hugging away the space shifts the glyphs.
+// Positive-positioned right-pinned containers must still hug.
 export function preserveAbsoluteAlignedBox(layout: any): any {
-    if (layout.layoutPositioning !== "ABSOLUTE" ||
+    if (layout.layoutPositioning !== "ABSOLUTE" || !(layout.x < 0) ||
         normalizeAxisAlign(layout.primaryAxisAlignItems) !== "MAX" ||
         normalizeAxisSizingMode(layout.primaryAxisSizingMode) !== "AUTO") return layout;
     return { ...layout, primaryAxisSizingMode: "FIXED" };
@@ -110,7 +117,8 @@ function applyDeferredNodeAutoLayout(record: { node: SceneNode; layout: any; isG
     }
 
     for (const key of ["minWidth", "maxWidth", "minHeight", "maxHeight"]) {
-        if (layout[key] !== undefined && key in node) safeSet(node, key, layout[key]);
+        const limit = normalizeMasterGoSizeLimit(layout[key]);
+        if (limit !== undefined && key in node) safeSet(node, key, limit);
     }
     if (hasAutoLayout(node)) {
         if (layout.layoutWrap !== undefined) safeSet(node, "layoutWrap", layout.layoutWrap);
@@ -180,7 +188,7 @@ function applyDeferredParentAutoLayout(record: { node: SceneNode; layout: any; i
         applied = true;
     }
     if (layout.layoutAlign) {
-        safeSet(node, "layoutAlign", normalizeLayoutAlign(layout.layoutAlign));
+        safeSet(node, "layoutAlign", rotatedStretchSize(layout, node.parent) ? "INHERIT" : normalizeLayoutAlign(layout.layoutAlign));
         applied = true;
     }
     if (layout.layoutGrow !== undefined) {
@@ -211,6 +219,14 @@ function finalizeDeferredAutoLayout(record: { node: SceneNode; layout: any; isGr
     const layout = preserveAbsoluteAlignedBox(normalizeDeferredLayoutForNativeGroupParent(node, record.layout));
     if (layout.width === undefined || layout.height === undefined || !shouldRestoreFixedSize(node, layout)) return;
 
+    const rotated = rotatedStretchSize(layout, node.parent);
+    if (rotated) {
+        safeSet(node, "layoutAlign", "INHERIT");
+        safeSet(node, "primaryAxisSizingMode", "FIXED");
+        safeSet(node, "counterAxisSizingMode", "FIXED");
+        safeResize(node, rotated.width, rotated.height);
+        return;
+    }
     const mode = normalizeLayoutMode(layout.layoutMode || (node as any).layoutMode);
     const primaryFixed = normalizeAxisSizingMode(layout.primaryAxisSizingMode || (node as any).primaryAxisSizingMode) === "FIXED";
     const counterFixed = normalizeAxisSizingMode(layout.counterAxisSizingMode || (node as any).counterAxisSizingMode) === "FIXED";
@@ -219,15 +235,40 @@ function finalizeDeferredAutoLayout(record: { node: SceneNode; layout: any; isGr
     const heightFixed = horizontalPrimary ? counterFixed : primaryFixed;
     // Resizing both dimensions turns a HUG axis into FIXED in Figma. Keep the
     // live HUG dimension and resize only the physical axis that is explicit.
-    safeResize(node, widthFixed ? layout.width : (node as any).width, heightFixed ? layout.height : (node as any).height);
+    const parentMode = hasAutoLayoutParent(node) && layout.layoutPositioning !== "ABSOLUTE" ? (node.parent as any).layoutMode : "NONE";
+    const fillWidth = (parentMode === "VERTICAL" && layout.layoutAlign === "STRETCH") || (parentMode === "HORIZONTAL" && layout.layoutGrow === 1);
+    const fillHeight = (parentMode === "HORIZONTAL" && layout.layoutAlign === "STRETCH") || (parentMode === "VERTICAL" && layout.layoutGrow === 1);
+    safeResize(node, widthFixed && !fillWidth ? layout.width : node.width, heightFixed && !fillHeight ? layout.height : node.height);
     if (layout.primaryAxisSizingMode) safeSet(node, "primaryAxisSizingMode", normalizeAxisSizingMode(layout.primaryAxisSizingMode));
     if (layout.counterAxisSizingMode) safeSet(node, "counterAxisSizingMode", normalizeAxisSizingMode(layout.counterAxisSizingMode));
+    if (parentMode !== "NONE") {
+        if (layout.layoutAlign !== undefined) safeSet(node, "layoutAlign", normalizeLayoutAlign(layout.layoutAlign));
+        if (layout.layoutGrow !== undefined) safeSet(node, "layoutGrow", layout.layoutGrow);
+    }
     if (hasFiniteRelativeTransform(layout)) {
         safeSet(node, "relativeTransform", layout.relativeTransform);
     } else {
         if (layout.x !== undefined) safeSet(node, "x", layout.x);
         if (layout.y !== undefined) safeSet(node, "y", layout.y);
     }
+}
+
+// MasterGo stretches a quarter-turned auto-layout child along its logical
+// axis; Figma stretches its rotated bounding box. Resolve the logical size
+// after the parent's fill width/height settles, then let HUG follow that box.
+export function rotatedStretchSize(layout: any, parent: any): { width: number; height: number } | null {
+    const m = layout.relativeTransform;
+    if (layout.layoutAlign !== "STRETCH" || layout.layoutPositioning === "ABSOLUTE" ||
+        !m || Math.abs(m[0][0]) > 1e-6 || Math.abs(m[1][1]) > 1e-6 ||
+        Math.abs(Math.abs(m[0][1]) - 1) > 1e-6 || Math.abs(Math.abs(m[1][0]) - 1) > 1e-6 ||
+        !Number.isFinite(layout.width) || !Number.isFinite(layout.height)) return null;
+    if (parent?.layoutMode === "VERTICAL") {
+        return { width: Math.max(0.01, parent.width - (parent.paddingLeft || 0) - (parent.paddingRight || 0)), height: layout.height };
+    }
+    if (parent?.layoutMode === "HORIZONTAL") {
+        return { width: layout.width, height: Math.max(0.01, parent.height - (parent.paddingTop || 0) - (parent.paddingBottom || 0)) };
+    }
+    return null;
 }
 
 export function absoluteStretchSize(layout: any, parentLayout: any, parent: any, constraints: any) {
@@ -237,6 +278,27 @@ export function absoluteStretchSize(layout: any, parentLayout: any, parent: any,
         return Math.max(0.01, layout[key] + parent[key] - parentLayout[key]);
     };
     return { width: dimension("horizontal", "width"), height: dimension("vertical", "height") };
+}
+
+export function absoluteConstrainedPosition(layout: any, parentLayout: any, parent: any, node: any): { x?: number; y?: number } | null {
+    if (layout.layoutPositioning !== "ABSOLUTE" || !parentLayout) return null;
+    const result: { x?: number; y?: number } = {};
+    for (const [axis, size, position] of [["horizontal", "width", "x"], ["vertical", "height", "y"]]) {
+        if (![layout[position], layout[size], parentLayout[size], parent[size], node[size]].every(Number.isFinite)) continue;
+        const constraint = node.constraints?.[axis];
+        const delta = parent[size] - parentLayout[size] - (node[size] - layout[size]);
+        if (constraint === "MAX") (result as any)[position] = layout[position] + delta;
+        if (constraint === "CENTER") (result as any)[position] = layout[position] + delta / 2;
+    }
+    return result;
+}
+
+function restoreAbsoluteConstrainedPosition(record: { node: SceneNode; layout: any; isGroup: boolean }) {
+    const { node, layout, isGroup } = record;
+    if (isRemovedNode(node) || isGroup || !node.parent) return;
+    const position = absoluteConstrainedPosition(layout, state.restoredLayoutByNodeId[node.parent.id], node.parent, node);
+    if (position?.x !== undefined) safeSet(node, "x", position.x);
+    if (position?.y !== undefined) safeSet(node, "y", position.y);
 }
 
 function restoreAbsoluteStretchBox(record: { node: SceneNode; layout: any; isGroup: boolean }) {
