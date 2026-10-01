@@ -1,6 +1,52 @@
 # MG / ZIP 导入一致性状态
 
-最后更新：2026-09-29（0929 整页导入修复；历史章节保留各轮实际结果）
+最后更新：2026-10-01（0930 的 1 px 容器修复；历史章节保留各轮实际结果）
+
+## 2026-10-01 · 测试 1001 2：接收端修复完成，待用户验收
+
+私有资产与逐轮记录保存在 Downloads/测试集 1001，未提交仓库。
+[Figma 对比文件](https://www.figma.com/design/U89TatUYkotExLhdDGrFKh)保留原始MG/ZIP基准与原生image。
+最终真实导入页MG `12:10604`、ZIP `12:12199`，各27根层、1325层。
+image `2:2971`：27张原生PNG，7层原生视口、9层主体/阴影、11层原生SVG边界核验；
+自然尺寸与烘焙旋转保持，Figma坐标误差最大0.000119，整页已截图对照。
+
+本轮修复字体列表/glyph索引、色段与旧ZIP完整styled ranges的UTF-16边界；
+嵌套Group收尾偏移；变量alias覆盖过时颜色缓存；显式空文字与实例空字符串覆盖；
+原生拉伸图片的CROP identity映射；纵轴主导斜向径向渐变的像素正交轴。
+搜索按钮从错误(967,104)恢复(1387,424)，tooltip/title恢复黑色，空实例不再出现Input，
+拉伸Logo与径向描边恢复。未改发送端算法。
+
+- actual/expected 1553/1325，missing0、extra228（51个libraryMaster依赖子树）。
+- type/parent/index/child-order/effects均0；geometry17、transform7、text0、font2、paint23。
+- deep8011，compare仍退出1。径向修正增加与错误ZIP矩阵的差异；不能以具名计数或默认值差异声明完全一致。
+- 144/144测试通过，两端构建通过；旧汇总fixture1631条完整解码记录与修复前工作树快照逐条相同。
+- 实际插件仍报MG251、ZIP327缺字体文本：Segoe UI（Regular/Semibold/Bold）、
+  Alimama ShuHeiTi Bold、Alibaba PuHuiTi 3.0 75 SemiBold，未擅自替换或安装字体。
+- 其他已定位残差：Figma原生图片filters没有hue（源8个paint）；ZIP丢CROP变换，
+  部分背景及裁切图失真；ZIP斜向径向矩阵错误。导出端候选是保留imageTransform/拉伸、
+  原生径向几何和必要时原生烘焙不支持的图片调整；待用户确认后实施。
+
+本节表示当前接收端实现与实际对照完成，**不是完全一致或用户已验收**。
+
+## 2026-10-01 · 测试 0930：1 px 容器
+
+输入是 Downloads 中同批次 `测试 0930-20261001-000157.mg` 与
+`mastergo2figma-测试 0930-20261001-000157.zip`；私有样本未加入仓库。
+最终真实插件验证页：[页面 1_mg_1px修复验证](https://www.figma.com/design/qRsrYC817PAsXOBH7PXmMP/?node-id=1-12)。
+保留原始 `_mg` / `_zip` 页。用户跳过 `_image`，本次以 ZIP 结构和实际导入尺寸验收，
+没有宣称 MasterGo 原生图片或像素级验收通过。
+
+- 结构：4/4 records，missing/extra 均 0，geometry **2→0**，deep-prop **24→22**。
+- 剩余 22 项全部为既有默认值表达差异：min/max 未设置 16 项、layoutWrap 3 项、
+  counterAxisSpacing 3 项。比较器仍非零退出，其余具名项均为 0。
+- 实际新构建导入成功 **1 页 / 4 图层**。组件 `1:15`、实例 `1:16` 均为 **354×1**，
+  位置分别为 (16,88)、(16,111)，底边描边均 0.5；父容器仍为 370×155。
+  分隔线重新显示，实例类型保留。旧 MG 基准页仍为导入前状态。
+- 仍有 1 个 HarmonyOS Sans Regular 字体缺失提示；文本回退宽度 318，与 ZIP
+  导入相同，源 ZIP 文本宽度 316。本轮未修改字体处理。
+- Node 测试 **119/119**，两端构建成功。无 ZIP 的三个现存 fixture：插件测试 汇总
+  1631、日常需求 647、地面站设计草稿 47236 条记录；页列表、记录数、ID SHA-256
+  和全部 layout 前后相同。历史 0920/0929 成对样本当前仓库不存在，未重跑其 compare。
 
 ## 2026-09-29 · 新版 ZIP 圆角复验完成
 
@@ -938,3 +984,57 @@ right. The durable comparison is the final Figma page linked above.
 完整实例 stub 的 transform 省略零轴修复后，本次运行：0920 geometry=157、transform=44、deep props=1591；0806 geometry=180、transform=106、deep props=1268。两套 missing/type/parent/index/child-order 均为 0，其他指标未变。96 项测试及两端构建通过。历史残差仍存在，不表示全量属性完全一致。
 
 实际插件重新导入成功：`页面 1_mg 8`（35:38256），目标标签 `35:40709` 与单选项容器均 y=0、height=22；已截图并与 `_image` 原图核对，5 px 上移消失。
+
+## 2026-10-01 · 测试1001（本轮已验证，剩余限制未解决）
+
+输入：`测试集/测试 1001-20261001-003456.mg` 与同时间 ZIP；
+原生图片基准位于 Figma `sZEU0b2qXuVtssiBRyeTkY` 的 `1:54275` 页。
+本轮保留开始时用户已有的0930修改。
+
+原配对 compare 实跑：missing 63→0，extra 9824不变，type/parent 0，
+index 4→0，childOrder 1→0，geometry 276→279，transform 208→211，
+font 5不变，vectorNetwork 14→12，paint/effect/text 0，deep props
+126573→126977。新增3处几何/transform差异均为找回的缺失子树；没有
+原本已存在节点的几何差异新增。deep 仍以 min/max null 对省略、locked、
+layoutWrap/counterAxisSpacing 等未一致字段为主；compare 退出1不是全通过。
+无ZIP的「插件测试 汇总」前后2页/1631条记录，ID SHA-256
+`3010295278f7ef270ca10e6df5cee53fe5abdbfe64f7cc0ef88a547a7bb16ebe` 不变。
+其他历史配对样本本轮不可用，没有引用历史计数作为本轮结果。
+
+修复：Connector端点误识别为记录边界导致丢63条；COLUMNS/STRETCH
+网格解码及发送/接收字段贯通；显式 mask visible 位优先，消除图表黑色
+渐变补漆；多guide连线路径；连线向量在auto-layout中设为ABSOLUTE。
+首轮真实导入每份22232层，9个根布局均保留；MG网格5个，新ZIP网格1个。
+Computer Use 续查源1:3变体也显示「24列 自动」，而API ZIP对应值为空；
+确认不是源配置缺失，仍需排查源端API/样式读取。不据MG结果声称ZIP恢复5个。
+
+后续修复普通容器内AUTO子层约束拉伸（边框48变96）和回折连线的节点
+间隙布线，129项测试通过，两端构建通过。ZIP最后一版已真实导入至 `10:28640`（`这个页面有内容1_zip_修复验证1001_v2`），
+三块描边224×48恢复、右侧回折线按节点间隙布线，整页截图复核。MG同版真实导入至 `10:50886`（`这个页面有内容1_mg_修复验证1001_v2`），
+22232图层、9根布局及5个24列网格通过核查，整页已截图比对。
+原始三页保留，本轮三个中间验证页已清理。MG391/ZIP309个文本仍报缺字体。
+仍有ZIP手动guide信息缺失、字体缺失及历史deep差异。尝试补导connector
+SVG导致MasterGo宿主memory access out of bounds，实验已撤回，未保留
+取消大文件SVG限制的改动。旧ZIP无法凭端点精确恢复任意手动折线路径。
+
+### SendToFigma 导出续修（真实导出与重导入通过）
+
+网格缺失已定位为宿主惰性解析：选择节点并让出一次事件循环后，5个组件均可读到
+24列配置，非gridStyleId遗漏。新发送端增加局部预加载与finally选择/页面恢复。
+连线采用扫描阶段的有界SVG缓存，绕开批量序列化后的宿主内存高峰；接收端保持
+逻辑尺寸并补偿render bounds偏移。该路径针对direct-zip扫描流程；分包中继路径
+未增加额外整树扫描，仍使用原折线降级。带标签、旋转/镜像、非全不透明或直线
+连接线继续使用原路径；缓存达到2MiB或单条128KiB上限时也保留降级。
+
+本轮完整direct-zip实际导出成功：22232层、0图片，文件
+`测试集/mastergo2figma-测试1001-export-fixed.zip`。对旧API ZIP：missing/extra均0，
+仅5个layoutGrids字段和4个connectorSvg字段变化，其余props完全相同。
+五个组件均为24列/槽宽20/边距0/FF3D00 12%；四条SVG为两条手动guide连线
+及右侧两条回折线。135项自动测试、两端构建通过。
+
+最终Figma验证页 `16:82954`（`这个页面有内容1_zip_导出修复1001`），
+22232层、9个根的坐标尺寸不变，5个24列Layout Grid完整，4条SVG轮廓均
+通过实际插件导入为可编辑矢量子层。两条手动绕行线不再穿过节点；其逻辑
+框1076×112和548×402不变，内部原生轮廓偏移(-1,-1)。整页截图复核。
+仍报309个文本节点缺字体；本轮没有更换字体。分包中继与旋转/带标签等
+不满足SVG条件的路径保持原有降级，不声明任意文件全量像素一致。

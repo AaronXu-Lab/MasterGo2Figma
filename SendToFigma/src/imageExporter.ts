@@ -12,7 +12,7 @@ export function padNumber(value: number): string {
 
 export function normalizeImageScaleModeForFigma(value: any): string {
     if (value === "FILL" || value === "FIT" || value === "CROP" || value === "TILE") return value;
-    if (value === "STRETCH") return "FILL";
+    if (value === "STRETCH") return "CROP";
     if (value === "CENTER") return "FIT";
     return "FILL";
 }
@@ -60,6 +60,11 @@ export function createImageFillJson(fill: any) {
     if (fill.filters) result.filters = fill.filters;
     if (fill.rotation !== undefined) result.rotation = finiteNumber(fill.rotation, 0);
     if (fill.ratio !== undefined) result.ratio = finiteNumber(fill.ratio, 1);
+    if (fill.scaleMode === "STRETCH") result.imageTransform = [[1, 0, 0], [0, 1, 0]];
+    else if (Array.isArray(fill.imageTransform) && fill.imageTransform.length === 2 &&
+        fill.imageTransform.every((row: any) => Array.isArray(row) && row.length === 3 && row.every(Number.isFinite))) {
+        result.imageTransform = fill.imageTransform.map((row: number[]) => row.slice());
+    }
 
     const sourceRef = typeof fill.imageRef === "string" ? fill.imageRef : "";
     if (!sourceRef || !state.activeImageAssetContext) {
@@ -106,7 +111,7 @@ export function markImageAssetMissing(asset: ImageAssetRecord, context: ImageAss
 }
 
 export async function loadAndStreamImageAsset(asset: ImageAssetRecord, context: ImageAssetContext, transfer: ExportTransferState) {
-    let bytes: Uint8Array | null = null;
+    let bytes: Uint8Array | null = asset.bytes;
     try {
         state.setExportDebugState({
             phase: "asset:get-image",
@@ -115,6 +120,7 @@ export async function loadAndStreamImageAsset(asset: ImageAssetRecord, context: 
             fileIndex: transfer.fileIndex,
             streamedBytes: transfer.streamedBytes
         });
+        if (!bytes) {
         const image = mg.getImageByHref(asset.sourceRef);
         if (!image || typeof image.getBytesAsync !== "function") throw new Error("图片资源不可读取");
 
@@ -126,6 +132,7 @@ export async function loadAndStreamImageAsset(asset: ImageAssetRecord, context: 
             streamedBytes: transfer.streamedBytes
         });
         bytes = await image.getBytesAsync();
+        }
         if (!bytes || bytes.length === 0) throw new Error("图片资源为空");
     } catch (error) {
         markImageAssetMissing(asset, context, "read", error);

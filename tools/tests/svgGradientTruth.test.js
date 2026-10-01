@@ -153,3 +153,21 @@ test("recovered ratio + handles rebuild the exact mg-side transform", () => {
     assert.ok(Math.abs(rebuilt[r][c] - expected[r][c]) < 1e-9, `[${r}][${c}] ${rebuilt[r][c]} != ${expected[r][c]}`);
   }
 });
+
+test("native rotate/scale radial preserves the pixel-space minor axis", () => {
+  const p0={x:.5,y:.6975620985031128},p1={x:.4858245849609375,y:-1.285552978515625};
+  const g=svgTruth.parseSvgRadialGradients(`<svg><radialGradient gradientUnits="userSpaceOnUse" gradientTransform="translate(652 139.06347751617432) rotate(82.15094271381719) scale(112.10472250159843 647.1840726775348)">${STOPS}</radialGradient></svg>`)[0];
+  const u={x:p1.x-p0.x,y:p1.y-p0.y};
+  const v=svgTruth.svgRadialMinorVector(g,1080,56,u);
+  assert.ok(v);
+  assert.ok(Math.abs((u.x*1080)*(v.x*1080)+(u.y*56)*(v.y*56))<1e-7);
+  assert.ok(Math.abs(Math.hypot(v.x*1080,v.y*56)-647.1840726775348)<1e-6);
+});
+
+test("SVG transform parsing rejects unknown operations instead of silently dropping them", () => {
+  assert.equal(svgTruth.parseSvgTransform('translate(1 2) skewX(30) scale(2)'),null);
+  assert.equal(svgTruth.parseSvgTransform('rotate(30) nonsense'),null);
+  const m=svgTruth.parseSvgTransform('rotate(90 10 20)');
+  assert.ok(Math.abs(m[0][2]-30)<1e-9);
+  assert.ok(Math.abs(m[1][2]-10)<1e-9);
+});

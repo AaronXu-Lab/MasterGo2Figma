@@ -5,6 +5,7 @@ import {
     normalizeFontFamilyForMatch
 } from "../fontLoader";
 import { MissingFontTextRestoreResult, MissingFontTextRestoreTarget } from "../../../shared/types";
+import { normalizeCompleteTextRanges } from "../../../shared/textRangeUtils";
 
 const MISSING_FONT_NAME_PREFIX_PATTERN = /^\[Font Missing\]\[([^\]]+)\]\[([^\]]+)\]\s*/;
 
@@ -64,6 +65,7 @@ export async function applyTextProperties(node: TextNode, data: any) {
 // single bad range never aborts the whole text node.
 export async function applyStyledTextSegments(node: TextNode, segments: any[]) {
     const charLength = node.characters.length;
+    segments = normalizeCompleteTextRanges(node.characters, segments);
 
     // Resolve + preload every distinct run font first.
     const resolvedByKey: { [key: string]: FontName | null } = {};

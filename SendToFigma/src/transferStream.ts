@@ -1,3 +1,4 @@
+import { captureConnectorSvg, clearConnectorSvgCache } from "./connectorSvgExporter";
 import { 
     ExportOptions, ExportManifest, PageExportTarget, ExportPageIndex, 
     LayerChunkAccumulator, ExportTransferState, ExportFile, ExportTransferFileKind,
@@ -603,6 +604,7 @@ export function slugifyPathPart(value: string) {
 }
 
 export async function countNodes(node: any) {
+    await captureConnectorSvg(node);
     state.totalNodes++;
     state.processedNodes++; // countVisited equivalent
     if (state.processedNodes % EXPORT_SCAN_YIELD_EVERY_NODES === 0) await yieldToEventLoop();
@@ -865,6 +867,7 @@ export async function streamPageRootSegmentsToPackages(
 }
 
 export async function streamJsonExportPackage(options: ExportOptions): Promise<ExportManifest> {
+    clearConnectorSvgCache();
     state.totalNodes = 0;
     state.processedNodes = 0;
     const previousImageAssetContext = state.activeImageAssetContext;
@@ -946,6 +949,7 @@ export async function streamJsonExportPackage(options: ExportOptions): Promise<E
         throw error;
     } finally {
         state.activeImageAssetContext = previousImageAssetContext;
+        clearConnectorSvgCache();
     }
 }
 

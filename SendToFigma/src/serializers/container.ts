@@ -1,16 +1,17 @@
+import { normalizeLayoutGrids } from "../../../shared/layoutGridUtils";
 import { getUniversalProperty, safeRead } from "./universal";
 import { getRuleRestoreType } from "../layerRules";
 import { transPenNode } from "./vector";
 
 export function transFrameNode(selection: any, sourceType?: string) {
     const universalStruct = getUniversalProperty(selection, sourceType);
-    const otherStruct = { "clipsContent": selection.clipsContent };
+    const otherStruct = { "clipsContent": selection.clipsContent, layoutGrids: normalizeLayoutGrids(safeRead(() => selection.layoutGrids, [])) };
     return Object.assign(otherStruct, universalStruct);
 }
 
 export function transSectionNode(selection: any) {
     const universalStruct = getUniversalProperty(selection, "SECTION", "SECTION");
-    const otherStruct = { "clipsContent": selection.clipsContent };
+    const otherStruct = { "clipsContent": selection.clipsContent, layoutGrids: normalizeLayoutGrids(safeRead(() => selection.layoutGrids, [])) };
     return Object.assign(otherStruct, universalStruct);
 }
 

@@ -104,6 +104,22 @@ test("radial-gradient axis scalar IS the Figma minor-axis ratio", () => {
   assert.equal(__test.radialAxisRatio({ x: 0, y: 0 }, { x: 0, y: 0 }, 0), 1);
 });
 
+test("slanted vertical radial matches native SVG ellipse in pixel space", () => {
+  const p0 = { x: 0.5, y: 0.6975620985031128 };
+  const p1 = { x: 0.4858245849609375, y: -1.285552978515625 };
+  const paint = { type: "GRADIENT_RADIAL", __mgRadialMeta: { p0, p1, ratio: 0.2993423640727997, conversionChain: false } };
+  __test.finalizeRadialPaints([paint], 1080, 56);
+  assert.equal(paint.__mgRadialMeta, undefined);
+  // Independent native SVG export: translate(540 39.0634775162)
+  // rotate(82.1509427138) scale(112.1047225016 647.1840726775).
+  // Opposite handle signs represent the same radial ellipse.
+  const expected = [[-0.657817590609099, -0.24742646975926538, 1.0015041227750396],
+    [0.8265668326822313, -0.005908344929941378, 0.09083802114689443]];
+  for (let i = 0; i < 2; i++) for (let j = 0; j < 3; j++) {
+    assert.ok(Math.abs(paint.gradientTransform[i][j] - expected[i][j]) < 1e-6);
+  }
+});
+
 test("Boolean anchor rebasing preserves absolute child positions", () => {
   const node = {
     x: 10,
@@ -730,4 +746,176 @@ test('concrete rectangles default omitted dimensions to one but preserve explici
 test('ellipse outer field two is its arc corner radius', () => {
   const bytes=Buffer.concat([Buffer.from('\x019:1\0\x03a0\0\x04Arc\0'),Buffer.from([0x1c,4,1,0,2,0x81,0,0,0,0,0,0x1d,1,0])]);
   assert.equal(__test.decodeNativeNodes(bytes).nodes['9:1'].arcCornerRadius,4);
+});
+
+function nativeBoxRecord(id, scalar, container) {
+  return Buffer.concat([
+    Buffer.from(`\x01${id}\0\x03a0\0\x04Box\0`), Buffer.from(scalar),
+    Buffer.from([0x1c, 7, ...container, 0, 0, 0x1d, 1, 0])
+  ]);
+}
+
+test('concrete native containers default each omitted axis to one and preserve explicit zero', () => {
+  for (const container of [[3, 0], [5, 1], [3, 0, 7, 4, 1, 0], [6, 1, 0x17, 2]]) {
+    for (const scalar of [[], [0x0e, 0], [0x0f, 0], [0x0e, 0, 0x0f, 0]]) {
+      const node = __test.decodeNativeNodes(nativeBoxRecord('9:1', scalar, container)).nodes['9:1'];
+      assert.equal(node.w, scalar.includes(0x0e) ? 0 : 1);
+      assert.equal(node.h, scalar.includes(0x0f) ? 0 : 1);
+    }
+  }
+});
+
+test('native 354 by 1 component and concrete instance decode their own omitted height', () => {
+  const width = [0x0e, 0x87, 0, 0, 0x62];
+  const reference = [...Buffer.from('\x1a9:1\0')];
+  const bytes = Buffer.concat([
+    nativeBoxRecord('9:1', width, [5, 1]),
+    nativeBoxRecord('9:2', [...width, ...reference], [6, 1, 0x17, 2])
+  ]);
+  const { nodes } = __test.decodeNativeNodes(bytes);
+  __test.inheritFromTemplate(nodes);
+  __test.expandTemplateInstances(nodes, {});
+  for (const id of ['9:1', '9:2']) {
+    assert.equal(nodes[id].w, 354);
+    assert.equal(nodes[id].h, 1);
+    assert.equal(nodes[id].hasExplicitH, false);
+  }
+});
+
+test('sparse container stubs and geometry-derived containers do not acquire a one-pixel box', () => {
+  const reference = [...Buffer.from('\x1a9:1\0')];
+  for (const [id, scalar, container] of [
+    ['9:2/9:1', [], [3, 0]],
+    ['9:2', reference, [3, 0]],
+    ['9:2', [], [0x0f, 0]],
+    ['9:2', [], [1, 0]],
+    ['9:2', [], [1, 0, 2, 1]]
+  ]) {
+    const node = __test.decodeNativeNodes(nativeBoxRecord(id, scalar, container)).nodes[id];
+    assert.equal(node.w, 0);
+    assert.equal(node.h, 0);
+  }
+});
+
+test('synthesized instance children retain template box dimensions', () => {
+  const { nodes } = __test.decodeNativeNodes(Buffer.concat([
+    nativeBoxRecord('9:1', [], [5, 1]),
+    nativeBoxRecord('9:2', [...Buffer.from('\x1a9:1\0')], [6, 1, 0x17, 2]),
+    nativeBoxRecord('9:3', [], [3, 0])
+  ]));
+  nodes['9:3'].parent = '9:1';
+  nodes['9:3'].w = 24;
+  nodes['9:3'].h = 8;
+  __test.expandTemplateInstances(nodes, { '9:1': ['9:3'] });
+  assert.equal(nodes['9:2/9:3'].w, 24);
+  assert.equal(nodes['9:2/9:3'].h, 8);
+});
+
+test("typed records supersede earlier reference objects with a codeless-root header", () => {
+  const bytes = Buffer.concat([
+    Buffer.from('\x0119:9918\0\x04\x83\0\0\0\0', 'latin1'),
+    Buffer.from('\x0119:9918\0\x0219:7876\0\x03a;\0\x04Real instance\0\x1bM\0\x1c\x07\x06\x01\x17\x02\0\0\x1d\x01\0', 'latin1')
+  ]);
+  const node = __test.decodeNativeNodes(bytes).nodes['19:9918'];
+  assert.equal(node.type, 'FRAME');
+  assert.equal(node.parent, '19:7876');
+  assert.equal(node.name, 'Real instance');
+});
+
+test("native grid registry decodes the verified 24-column stretch grid", () => {
+  const bytes = Buffer.from('0131393a32303239000231393a3230323800036130000402057b1e85eb7f0000007ceae9e90009830000800a830000400c0100', 'hex');
+  const grid = __test.scanLayoutGrids(bytes, bytes.toString('latin1'))['19:2028'][0];
+  assert.equal(grid.pattern, 'COLUMNS');
+  assert.equal(grid.count, 24);
+  assert.equal(grid.gutterSize, 20);
+  assert.equal(grid.offset, 0);
+  assert.ok(Math.abs(grid.color.a - 0.12) < 1e-6);
+  assert.ok(Math.abs(grid.color.g - 61 / 255) < 1e-6);
+  const trailer = Buffer.from('\x1d\x01\x2819:2028\0\0', 'latin1');
+  assert.equal(__test.parseTrailer(trailer, trailer.toString('latin1'), 0, trailer.length).gridRef, '19:2028');
+});
+
+test("explicit mask visibility overrides legacy paint participation", () => {
+  assert.equal(__test.maskRendersFill({t1e:1,t27:0,t37:1}),false);
+  assert.equal(__test.maskRendersFill({t1e:1,t27:1}),true);
+  assert.equal(__test.maskRendersFill({t1e:1}),true);
+});
+
+test("connector endpoint y fields do not split the enclosing native record", () => {
+  const bytes = Buffer.from('0131393a37383739000231393a373837360003613a00040f84000040108000000013011631303a30323333001801850000c00286000010001b4d001c0b0204030131393a3939333800020200040131393a3939313800048400004000088300000000001d0100','hex');
+  // No layer name is needed; retain the observed connector payload verbatim.
+  const header = Buffer.from('\x0119:7879\0\x0219:7876\0\x03a:\0','latin1');
+  const body = bytes.subarray(bytes.indexOf(Buffer.from([0x0f,0x84])));
+  const n = __test.decodeNativeNodes(Buffer.concat([header,body])).nodes['19:7879'];
+  assert.deepEqual(n.connector.end,{x:0,y:40,nodeId:'19:9918'});
+});
+
+test("multiple connector guides preserve zero-coordinate final turns", () => {
+  const props = __test.connectorProps({start:{x:1046,y:0,magnet:1},end:{x:30,y:112,magnet:3},startCap:0,endCap:4,radius:16,lineType:0,guides:[{x:1076},{axis:1,y:79},{}]});
+  assert.deepEqual(props.vectorNetwork.vertices.map(({x,y})=>({x,y})),[
+    {x:1046,y:0},{x:1076,y:0},{x:1076,y:79},{x:0,y:79},{x:0,y:112},{x:30,y:112}
+  ]);
+  assert.equal(props.vectorNetwork.vertices.at(-1).strokeCap,'ARROW_EQUILATERAL');
+});
+
+test("fallback-font glyph indices preserve complete ordered mixed text", () => {
+  const run = (sort, text, style, indices) => Buffer.concat([
+    Buffer.from('\x01' + sort + '\0\x02' + text + '\0\x03' + style + '\0'),
+    Buffer.from([6, 2]), Buffer.from('Segoe UI/Regular/Version 5.62\0fallback48/Regular/Version 2\0'),
+    Buffer.from([7, indices.length, ...indices.flatMap(index => [index, 0x81, 9]), 0])
+  ]);
+  const bytes = Buffer.concat([Buffer.from([6, 2]), run('a1', '中文', '1:2', [1, 1]), run('a0', 'Go ', '1:1', [0, 0, 0]), Buffer.from([0])]);
+  const parsed = __test.parseFontRuns(bytes, 0, bytes.length);
+  assert.deepEqual(parsed.runs.map(r => [r.text, r.start, r.end]), [['Go ', 0, 3], ['中文', 3, 5]]);
+  assert.equal(parsed.runs[0].fontString, 'Segoe UI/Regular/Version 5.62');
+  const invalid = Buffer.from(bytes);
+  const at = invalid.indexOf(Buffer.from([7, 2, 1, 0x81]));
+  invalid[at + 2] = 2;
+  assert.equal(__test.parseFontRuns(invalid, 0, invalid.length), null);
+});
+
+test("native color runs map astral code-point boundaries to UTF-16", () => {
+  const bytes = Buffer.from('\x09\x02\x02\x02\x031:1\0\0\x02\x03\x031:2\0\0');
+  assert.deepEqual(__test.parseTextRuns(bytes, 0, bytes.length, 4, 'A📖B'), [
+    { start: 0, end: 3, paintRef: '1:1' }, { start: 3, end: 4, paintRef: '1:2' }
+  ]);
+});
+
+test('selected-mode aliases override stale paints through chains and retain cyclic fallbacks', () => {
+  const paint=(id,ref,white)=>Buffer.concat([
+    Buffer.from('\x01'+id+'\0\x02'+ref+'\0\x03a0\0\x08'),
+    Buffer.from([0x7f,0,0,0,...(white?[0x7f,0,0,0,0x7f,0,0,0,0x7f,0,0,0]:[0,0,0]),0])
+  ]);
+  const alias=(a,b)=>Buffer.from('\x01'+a+'/M:2\0\x02'+b+'\0\x04\x01\x05'+a+'/M:2:0:0\0\x06\x02\0');
+  const bytes=Buffer.concat([paint('9:11','9:1',true),paint('9:12','9:2',true),paint('9:13','9:3',false),
+    paint('9:14','9:4',true),paint('9:15','9:5',false),
+    alias('9:1','9:2'),alias('9:2','9:3'),alias('9:4','9:5'),alias('9:5','9:4')]);
+  const paints=__test.scanPaints(bytes,bytes.toString('latin1'));
+  assert.deepEqual(paints['9:1'][0].color,{r:0,g:0,b:0});
+  assert.deepEqual(paints['9:2'][0].color,{r:0,g:0,b:0});
+  assert.deepEqual(paints['9:4'][0].color,{r:1,g:1,b:1});
+  assert.deepEqual(paints['9:5'][0].color,{r:0,g:0,b:0});
+});
+
+test('empty typed instance text clears content while an absent payload remains inheritable', () => {
+  const bytes=Buffer.from('0301078282110a393a31000000','hex');
+  const empty=__test.parseEmptyText(bytes,0,bytes.length);
+  assert.equal(empty.characters,'');
+  assert.equal(empty.firstStyleRef,'9:1');
+  const slot={id:'label',rawType:'TEXT',characters:'Input'};
+  const override={id:'instance/label',rawType:'TEXT',templateRef:'label',characters:empty.characters};
+  __test.inheritFromTemplate({label:slot,[override.id]:override});
+  assert.equal(override.characters,'');
+  for(const hex of ['030100','03010600','030107828211','0301078282110a393a31']) {
+    const b=Buffer.from(hex,'hex');assert.equal(__test.parseEmptyText(b,0,b.length),null);
+  }
+});
+
+test('native stretch maps to identity image transform while tile remains tile',()=>{
+  for(const mode of [2,4]) {
+    const b=Buffer.concat([Buffer.from('\x019:2\0\x029:1\0\x03a0\0\x05\x05\x0b\x01'),Buffer.from([mode]),Buffer.from('\x03image.png\0\0\x0c\x01\0')]);
+    const p=__test.scanPaints(b,b.toString('latin1'))['9:1'][0];
+    assert.equal(p.scaleMode,mode===2?'CROP':'TILE');
+    assert.deepEqual(p.imageTransform,mode===2?[[1,0,0],[0,1,0]]:undefined);
+  }
 });

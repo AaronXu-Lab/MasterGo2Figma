@@ -321,6 +321,48 @@
     return getRuleRestoreType(sourceType);
   }
 
+  // src/connectorSvgExporter.ts
+  var MAX_CONNECTOR_SVG_BYTES = 128 * 1024;
+  var MAX_CONNECTOR_CACHE_BYTES = 2 * 1024 * 1024;
+  var cache = {};
+  var cacheBytes = 0;
+  function clearConnectorSvgCache() {
+    cache = {};
+    cacheBytes = 0;
+  }
+  function takeConnectorSvg(id) {
+    const value = cache[id];
+    if (value) {
+      cacheBytes -= value.markup.length;
+      delete cache[id];
+    }
+    return value;
+  }
+  function captureConnectorSvg(node) {
+    return __async(this, null, function* () {
+      if (node.type !== "CONNECTOR" || node.width <= 1 || node.height <= 1 || node.opacity !== 1 || cacheBytes >= MAX_CONNECTOR_CACHE_BYTES) return;
+      if (node.text && node.text.characters) return;
+      const m = node.absoluteTransform;
+      if (!m || m[0][0] !== 1 || m[0][1] !== 0 || m[1][0] !== 0 || m[1][1] !== 1) return;
+      try {
+        const markup = yield node.exportAsync({ format: "SVG" });
+        if (typeof markup !== "string" || markup.length > MAX_CONNECTOR_SVG_BYTES || cacheBytes + markup.length > MAX_CONNECTOR_CACHE_BYTES) return;
+        const bounds = node.absoluteRenderBounds;
+        if (!bounds || ![bounds.x, bounds.y, bounds.width, bounds.height].every(Number.isFinite)) return;
+        cache[node.id] = {
+          markup,
+          offset: { x: bounds.x - m[0][2], y: bounds.y - m[1][2] },
+          width: bounds.width,
+          height: bounds.height
+        };
+        cacheBytes += markup.length;
+      } catch (error) {
+        if (isOutOfMemoryError(error)) throw error;
+        console.warn("[MasterGo2Figma] Connector SVG unavailable", node.id, String(error));
+      }
+    });
+  }
+
   // ../shared/layoutLimits.ts
   function normalizeMasterGoSizeLimit(value) {
     if (value === void 0) return void 0;
@@ -401,11 +443,35 @@
     if (value === "CIRCLE_FILLED") return "ROUND";
     return "NONE";
   }
-  function createConnectorRoutePoints(start, end, startEndpoint, endEndpoint, lineType) {
+  function createConnectorRoutePoints(start, end, startEndpoint, endEndpoint, lineType, bounds) {
     const startPoint = normalizeConnectorPoint(start);
     const endPoint = normalizeConnectorPoint(end);
     if (lineType !== "ELBOWED" || isSameConnectorAxis(startPoint, endPoint)) {
       return dedupeConnectorPoints([startPoint, endPoint]);
+    }
+    const sm = startEndpoint == null ? void 0 : startEndpoint.magnet;
+    const em = endEndpoint == null ? void 0 : endEndpoint.magnet;
+    if (bounds && sm === "BOTTOM" && endPoint.y < startPoint.y && em === "LEFT" && endPoint.x > startPoint.x && bounds.height > startPoint.y) {
+      const edge = startPoint.x + (Number(startEndpoint == null ? void 0 : startEndpoint.width) || 0) / 2;
+      const middleX = (edge + endPoint.x) / 2;
+      return dedupeConnectorPoints([
+        startPoint,
+        { x: startPoint.x, y: bounds.height },
+        { x: middleX, y: bounds.height },
+        { x: middleX, y: endPoint.y },
+        endPoint
+      ]);
+    }
+    if (bounds && sm === "RIGHT" && em === "TOP" && endPoint.y < startPoint.y && endPoint.x > startPoint.x && endPoint.y > 0) {
+      const edge = endPoint.x - (Number(endEndpoint == null ? void 0 : endEndpoint.width) || 0) / 2;
+      const middleX = (startPoint.x + edge) / 2;
+      return dedupeConnectorPoints([
+        startPoint,
+        { x: middleX, y: startPoint.y },
+        { x: middleX, y: 0 },
+        { x: endPoint.x, y: 0 },
+        endPoint
+      ]);
     }
     const horizontalFirst = shouldConnectorRouteStartHorizontal(startPoint, endPoint, startEndpoint, endEndpoint);
     const middlePoint = horizontalFirst ? { x: endPoint.x, y: startPoint.y } : { x: startPoint.x, y: endPoint.y };
@@ -443,7 +509,7 @@
   }
   function normalizeImageScaleModeForFigma(value) {
     if (value === "FILL" || value === "FIT" || value === "CROP" || value === "TILE") return value;
-    if (value === "STRETCH") return "FILL";
+    if (value === "STRETCH") return "CROP";
     if (value === "CENTER") return "FIT";
     return "FILL";
   }
@@ -486,6 +552,10 @@
     if (fill.filters) result.filters = fill.filters;
     if (fill.rotation !== void 0) result.rotation = finiteNumber(fill.rotation, 0);
     if (fill.ratio !== void 0) result.ratio = finiteNumber(fill.ratio, 1);
+    if (fill.scaleMode === "STRETCH") result.imageTransform = [[1, 0, 0], [0, 1, 0]];
+    else if (Array.isArray(fill.imageTransform) && fill.imageTransform.length === 2 && fill.imageTransform.every((row) => Array.isArray(row) && row.length === 3 && row.every(Number.isFinite))) {
+      result.imageTransform = fill.imageTransform.map((row) => row.slice());
+    }
     const sourceRef = typeof fill.imageRef === "string" ? fill.imageRef : "";
     if (!sourceRef || !state.activeImageAssetContext) {
       markMissingImageFill(result, "missing-image");
@@ -522,7 +592,7 @@
   }
   function loadAndStreamImageAsset(asset, context, transfer) {
     return __async(this, null, function* () {
-      let bytes = null;
+      let bytes = asset.bytes;
       try {
         state.setExportDebugState({
           phase: "asset:get-image",
@@ -531,16 +601,18 @@
           fileIndex: transfer.fileIndex,
           streamedBytes: transfer.streamedBytes
         });
-        const image = mg.getImageByHref(asset.sourceRef);
-        if (!image || typeof image.getBytesAsync !== "function") throw new Error("\u56FE\u7247\u8D44\u6E90\u4E0D\u53EF\u8BFB\u53D6");
-        state.setExportDebugState({
-          phase: "asset:get-bytes",
-          file: asset.path,
-          transferId: transfer.transferId,
-          fileIndex: transfer.fileIndex,
-          streamedBytes: transfer.streamedBytes
-        });
-        bytes = yield image.getBytesAsync();
+        if (!bytes) {
+          const image = mg.getImageByHref(asset.sourceRef);
+          if (!image || typeof image.getBytesAsync !== "function") throw new Error("\u56FE\u7247\u8D44\u6E90\u4E0D\u53EF\u8BFB\u53D6");
+          state.setExportDebugState({
+            phase: "asset:get-bytes",
+            file: asset.path,
+            transferId: transfer.transferId,
+            fileIndex: transfer.fileIndex,
+            streamedBytes: transfer.streamedBytes
+          });
+          bytes = yield image.getBytesAsync();
+        }
         if (!bytes || bytes.length === 0) throw new Error("\u56FE\u7247\u8D44\u6E90\u4E3A\u7A7A");
       } catch (error) {
         markImageAssetMissing(asset, context, "read", error);
@@ -1079,14 +1151,17 @@
   function parseSvgTransform(raw) {
     if (!raw) return IDENTITY;
     let result = IDENTITY;
-    const re = /(matrix|translate|scale)\s*\(([^)]*)\)/g;
+    const re = /([A-Za-z]+)\s*\(([^)]*)\)/g;
     let m;
     let any = false;
+    let consumed = 0;
     const mul = (a, b) => [
       [a[0][0] * b[0][0] + a[0][1] * b[1][0], a[0][0] * b[0][1] + a[0][1] * b[1][1], a[0][0] * b[0][2] + a[0][1] * b[1][2] + a[0][2]],
       [a[1][0] * b[0][0] + a[1][1] * b[1][0], a[1][0] * b[0][1] + a[1][1] * b[1][1], a[1][0] * b[0][2] + a[1][1] * b[1][2] + a[1][2]]
     ];
     while (m = re.exec(raw)) {
+      if (raw.slice(consumed, m.index).replace(/[\s,]/g, "")) return null;
+      consumed = re.lastIndex;
       const args = m[2].split(/[\s,]+/).filter(Boolean).map(Number);
       if (args.some((v) => !Number.isFinite(v))) return null;
       let step = null;
@@ -1096,12 +1171,17 @@
         step = [[1, 0, args[0]], [0, 1, args.length > 1 ? args[1] : 0]];
       } else if (m[1] === "scale" && args.length >= 1) {
         step = [[args[0], 0, 0], [0, args.length > 1 ? args[1] : args[0], 0]];
+      } else if (m[1] === "rotate" && (args.length === 1 || args.length === 3)) {
+        const angle = args[0] * Math.PI / 180;
+        const c = Math.cos(angle), s = Math.sin(angle);
+        const x = args[1] || 0, y = args[2] || 0;
+        step = [[c, -s, x - c * x + s * y], [s, c, y - s * x - c * y]];
       }
       if (!step) return null;
       result = mul(result, step);
       any = true;
     }
-    return any ? result : IDENTITY;
+    return any && !raw.slice(consumed).replace(/[\s,]/g, "") ? result : null;
   }
   function parseAttributes(tag) {
     const attrs = {};
@@ -1221,6 +1301,120 @@
       }
     }
     return null;
+  }
+  function svgRadialMinorVector(gradient, width, height, u) {
+    const ratio = svgRadialAxisRatio(gradient, width, height, u);
+    if (ratio === null) return null;
+    const w = gradient.objectBoundingBox ? 1 : width;
+    const h = gradient.objectBoundingBox ? 1 : height;
+    const x = -u.y * h / w, y = u.x * w / h;
+    const length = Math.hypot(x, y);
+    if (!(length > 0)) return null;
+    const scale = ratio * Math.hypot(u.x, u.y) / length;
+    return { x: x * scale, y: y * scale };
+  }
+
+  // src/serializers/svgImageTruth.ts
+  function parseSvgImageTruth(svg, width, height) {
+    if (!(width > 0) || !(height > 0)) return null;
+    const patterns = [];
+    const patternRe = /<pattern\b([^>]*)>([\s\S]*?)<\/pattern>/g;
+    let match;
+    while (match = patternRe.exec(svg)) patterns.push(match);
+    if (patterns.length !== 1) return null;
+    const attrs = parseAttributes(patterns[0][1]);
+    if (attrs.patternunits !== "userSpaceOnUse" || attrs.patterntransform || attrs.patterncontentunits && attrs.patterncontentunits !== "userSpaceOnUse" || Math.abs(Number(attrs.width) - width) > 0.015 || Math.abs(Number(attrs.height) - height) > 0.015) return null;
+    const body = patterns[0][2];
+    const images = [];
+    const imageRe = /<image\b([^>]*)\/?\s*>/g;
+    while (match = imageRe.exec(body)) images.push(match);
+    if (images.length !== 1 || /<(?:g|use)\b/.test(body)) return null;
+    const img = parseAttributes(images[0][1]);
+    const dataUri = img["xlink:href"] || img.href || "";
+    if (!/^data:image\/(?:png|jpeg);base64,[A-Za-z0-9+/=]+$/.test(dataUri)) return null;
+    const iw = Number(img.width), ih = Number(img.height);
+    const x = Number(img.x || 0), y = Number(img.y || 0);
+    const m = parseSvgTransform(img.transform);
+    if (!m || ![iw, ih, x, y].every(Number.isFinite) || !(iw > 0 && ih > 0)) return null;
+    const a = m[0][0] * iw / width, b = m[0][1] * ih / width;
+    const c = m[1][0] * iw / height, d = m[1][1] * ih / height;
+    const tx = (m[0][0] * x + m[0][1] * y + m[0][2]) / width;
+    const ty = (m[1][0] * x + m[1][1] * y + m[1][2]) / height;
+    const det = a * d - b * c;
+    if (!Number.isFinite(det) || Math.abs(det) < 1e-12) return null;
+    return {
+      dataUri,
+      imageTransform: [
+        [d / det, -b / det, (b * ty - d * tx) / det],
+        [-c / det, a / det, (c * tx - a * ty) / det]
+      ]
+    };
+  }
+  function decodeImageDataUri(uri, byteLimit) {
+    const match = /^data:image\/(?:png|jpeg);base64,([A-Za-z0-9+/]+={0,2})$/.exec(uri);
+    if (!match || match[1].length % 4 !== 0) return null;
+    const data = match[1];
+    const length = data.length / 4 * 3 - (data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0);
+    if (length <= 0 || length > byteLimit) return null;
+    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const bytes = new Uint8Array(length);
+    let accumulator = 0, bits = 0, offset = 0;
+    for (let i = 0; i < data.length && data[i] !== "="; i++) {
+      accumulator = accumulator << 6 | alphabet.indexOf(data[i]);
+      bits += 6;
+      if (bits >= 8) {
+        bits -= 8;
+        bytes[offset++] = accumulator >> bits & 255;
+      }
+    }
+    return bytes;
+  }
+
+  // src/imagePaintExporter.ts
+  var MAX_SVG_BYTES = 12 * 1024 * 1024;
+  var MAX_DERIVED_BYTES = 16 * 1024 * 1024;
+  function enrichImagePaintTruth(node, json) {
+    return __async(this, null, function* () {
+      var _a, _b, _c;
+      const context = state.activeImageAssetContext;
+      if (!context || "children" in node && node.children.length > 0) return;
+      const fills = (_a = json == null ? void 0 : json.geometry) == null ? void 0 : _a.fills;
+      if (!Array.isArray(fills) || fills.length !== 1 || ((_b = fills[0]) == null ? void 0 : _b.type) !== "IMAGE") return;
+      const paint = fills[0];
+      const bakeFilters = Number.isFinite((_c = paint.filters) == null ? void 0 : _c.hue) && Math.abs(paint.filters.hue) > 1e-8;
+      const needsCrop = paint.scaleMode === "CROP" && !paint.imageTransform;
+      if (!bakeFilters && !needsCrop) return;
+      try {
+        const output = yield node.exportAsync({ format: "SVG" });
+        if (!output || output.length > MAX_SVG_BYTES) throw new Error("SVG image probe exceeds byte limit");
+        let svg = "";
+        if (typeof output === "string") svg = output;
+        else for (let i = 0; i < output.length; i++) svg += String.fromCharCode(output[i]);
+        const truth = parseSvgImageTruth(svg, node.width, node.height);
+        if (!truth) throw new Error("SVG image pattern is ambiguous or unsupported");
+        if (bakeFilters) {
+          const retained = context.assets.reduce((sum, asset2) => sum + (asset2.sourceRef.startsWith("native-svg:") && asset2.bytes ? asset2.bytes.length : 0), 0);
+          const bytes = decodeImageDataUri(truth.dataUri, MAX_DERIVED_BYTES - retained);
+          if (!bytes) throw new Error("Native adjusted image exceeds retained byte limit");
+          const asset = registerImageAsset(`native-svg:${node.id}:fill`);
+          asset.bytes = bytes;
+          paint.imageRef = asset.key;
+          delete paint.filters;
+        }
+        paint.scaleMode = "CROP";
+        paint.imageTransform = truth.imageTransform;
+        delete paint.rotation;
+        delete paint.ratio;
+      } catch (error) {
+        if (isOutOfMemoryError(error)) throw error;
+        state.logDiagnostic("warn", "[MasterGo2Figma] Image paint SVG recovery skipped", {
+          nodeId: node.id,
+          needsCrop,
+          bakeFilters,
+          error: describeError(error)
+        });
+      }
+    });
   }
 
   // ../shared/vectorUtils.ts
@@ -1528,10 +1722,40 @@
     return Object.assign(otherStruct, universalStruct);
   }
 
+  // ../shared/layoutGridUtils.ts
+  function normalizeLayoutGrids(grids) {
+    var _a, _b, _c;
+    if (!Array.isArray(grids)) return [];
+    const result = [];
+    for (const grid of grids) {
+      if (!grid || typeof grid !== "object") continue;
+      const pattern = grid.pattern || grid.gridType;
+      if (["GRID", "ROWS", "COLUMNS"].indexOf(pattern) < 0) continue;
+      const common = {
+        pattern,
+        visible: (_b = (_a = grid.visible) != null ? _a : grid.isVisible) != null ? _b : true,
+        color: grid.color ? { r: grid.color.r, g: grid.color.g, b: grid.color.b, a: grid.color.a } : { r: 1, g: 0, b: 0, a: 0.1 }
+      };
+      const sectionSize = grid.sectionSize == null ? void 0 : grid.sectionSize;
+      if (pattern === "GRID") {
+        result.push(__spreadProps(__spreadValues({}, common), { sectionSize: sectionSize != null ? sectionSize : 10 }));
+        continue;
+      }
+      const alignment = { LEFT: "MIN", RIGHT: "MAX" }[grid.alignment] || grid.alignment || "STRETCH";
+      result.push(__spreadValues(__spreadProps(__spreadValues({}, common), {
+        alignment,
+        count: grid.count,
+        gutterSize: grid.gutterSize,
+        offset: (_c = grid.offset) != null ? _c : 0
+      }), sectionSize === void 0 || alignment === "STRETCH" ? {} : { sectionSize }));
+    }
+    return result;
+  }
+
   // src/serializers/container.ts
   function transFrameNode(selection, sourceType) {
     const universalStruct = getUniversalProperty(selection, sourceType);
-    const otherStruct = { "clipsContent": selection.clipsContent };
+    const otherStruct = { "clipsContent": selection.clipsContent, layoutGrids: normalizeLayoutGrids(safeRead(() => selection.layoutGrids, [])) };
     return Object.assign(otherStruct, universalStruct);
   }
   function transGroupNode(selection) {
@@ -1548,6 +1772,28 @@
     const json = getUniversalProperty(node, "BOOLEAN_OPERATION", restoreType);
     json.booleanOperation = safeRead(() => node.booleanOperation, "UNION");
     return json;
+  }
+
+  // src/layoutGridExporter.ts
+  function readResolvedLayoutGrids(node, page, document) {
+    return __async(this, null, function* () {
+      const direct = normalizeLayoutGrids(node.layoutGrids);
+      if (direct.length) return direct;
+      const previousPage = document.currentPage;
+      const previousSelection = page.selection;
+      try {
+        if (previousPage !== page) document.currentPage = page;
+        page.selection = [node];
+        yield new Promise((resolve) => setTimeout(resolve, 0));
+        return normalizeLayoutGrids(node.layoutGrids);
+      } finally {
+        try {
+          page.selection = previousSelection.filter((item) => !item.removed);
+        } finally {
+          if (document.currentPage !== previousPage) document.currentPage = previousPage;
+        }
+      }
+    });
   }
 
   // src/exportConfig.ts
@@ -1809,9 +2055,9 @@
       const p0 = { x: Number(handles[0].x), y: Number(handles[0].y) };
       const p1 = { x: Number(handles[1].x), y: Number(handles[1].y) };
       const u = { x: p1.x - p0.x, y: p1.y - p0.y };
-      const ratio = svgRadialAxisRatio(gradient, width, height, u);
-      if (ratio === null) continue;
-      const minorEnd = { x: p0.x - u.y * ratio, y: p0.y + u.x * ratio };
+      const minor = svgRadialMinorVector(gradient, width, height, u);
+      if (minor === null) continue;
+      const minorEnd = { x: p0.x + minor.x, y: p0.y + minor.y };
       const transform = getResultArrayByThreePoints([p0, p1, minorEnd]);
       if (isFiniteTransform(transform)) paint.gradientTransform = transform;
     }
@@ -1951,6 +2197,7 @@
   }
   function collectSingleNodeExport(node, page, pageFolder, parentId, index, pageIndex, chunk, transfer, relation) {
     return __async(this, null, function* () {
+      var _a;
       state.processedNodes++;
       let phase = "start";
       const nodeId = safeRead(() => node.id, `node-${pageIndex.layerCount + 1}`);
@@ -1980,6 +2227,19 @@
         childNodes = getSafeExportableChildren(node);
         setNodeDebug("analyse");
         let nodeJson = analyseNodes(node);
+        const connectorSvg = takeConnectorSvg(nodeId);
+        if (connectorSvg) nodeJson.connectorSvg = connectorSvg;
+        if (Array.isArray(nodeJson.layoutGrids) && nodeJson.layoutGrids.length === 0) {
+          try {
+            nodeJson.layoutGrids = yield readResolvedLayoutGrids(node, page, mg.document);
+          } catch (error) {
+            if (isOutOfMemoryError(error)) throw error;
+            state.logDiagnostic("warn", "[MasterGo2Figma] Unable to resolve layout grids", {
+              node: nodeDebug,
+              error: describeError(error)
+            });
+          }
+        }
         setNodeDebug("enrich-boolean");
         yield enrichBooleanOperationExport(node, nodeJson, childNodes);
         setNodeDebug("enrich-vector");
@@ -1988,6 +2248,8 @@
         yield enrichEllipseArcExport(node, nodeJson);
         setNodeDebug("enrich-radial-gradient");
         yield enrichRadialGradientTruth(node, nodeJson);
+        setNodeDebug("enrich-image-paint");
+        yield enrichImagePaintTruth(node, nodeJson);
         setNodeDebug("override-layout");
         overrideExportLayoutFromSourceNode(nodeJson, node);
         setNodeDebug("build-record");
@@ -2003,6 +2265,10 @@
           childIds,
           props: nodeJson
         };
+        if ((_a = nodeJson == null ? void 0 : nodeJson.blend) == null ? void 0 : _a.isMask) {
+          const maskVisible = safeRead(() => node.isMaskVisible, void 0);
+          if (typeof maskVisible === "boolean") layerRecord.maskRendersFill = maskVisible;
+        }
         const exportedChildCount = childNodes.length;
         const getNodeComplexity = () => {
           const snapshot = createNodeComplexitySnapshot(node, void 0, nodeJson);
@@ -2650,6 +2916,7 @@
   }
   function countNodes(node) {
     return __async(this, null, function* () {
+      yield captureConnectorSvg(node);
       state.totalNodes++;
       state.processedNodes++;
       if (state.processedNodes % EXPORT_SCAN_YIELD_EVERY_NODES === 0) yield yieldToEventLoop();
@@ -2877,6 +3144,7 @@
   }
   function streamJsonExportPackage(options) {
     return __async(this, null, function* () {
+      clearConnectorSvgCache();
       state.totalNodes = 0;
       state.processedNodes = 0;
       const previousImageAssetContext = state.activeImageAssetContext;
@@ -2950,6 +3218,7 @@
         throw error;
       } finally {
         state.activeImageAssetContext = previousImageAssetContext;
+        clearConnectorSvgCache();
       }
     });
   }

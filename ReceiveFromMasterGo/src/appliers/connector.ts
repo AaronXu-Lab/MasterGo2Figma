@@ -132,7 +132,8 @@ export function createConnectorVectorNetworkFromData(data: any, parent: PageNode
         end,
         data.connectorStart,
         data.connectorEnd,
-        data.connectorLineType || "ELBOWED"
+        data.connectorLineType || "ELBOWED",
+        data.layout
     );
 
     const vertices = points.map((point, index) => {

@@ -1,3 +1,5 @@
+import { takeConnectorSvg } from "./connectorSvgExporter";
+import { enrichImagePaintTruth } from "./imagePaintExporter";
 import { state } from "./state";
 import { safeRead, isOutOfMemoryError, describeError } from "../../shared/utils";
 import {
@@ -6,7 +8,7 @@ import {
     getResultArrayByThreePoints, isFiniteTransform
 } from "./serializers/universal";
 import {
-    parseSvgRadialGradients, svgStopsMatchPaintStops, svgRadialAxisRatio, SvgRadialGradient
+    parseSvgRadialGradients, svgStopsMatchPaintStops, svgRadialMinorVector, SvgRadialGradient
 } from "./serializers/svgGradientTruth";
 import { transPenNode, cloneVectorNetworkForExport, normalizeVectorRegions } from "./serializers/vector";
 import { 
@@ -16,6 +18,7 @@ import {
 import { transTextNode } from "./serializers/text";
 import { transConnectorNode } from "./serializers/connector";
 import { transFrameNode, transSectionNode, transGroupNode, transBONode, transBooleanTreeNode } from "./serializers/container";
+import { readResolvedLayoutGrids } from "./layoutGridExporter";
 import { getLayerRule, getRuleRestoreType } from "./layerRules";
 import { getSafeExportableChildren } from "./nodeTraverser";
 import { appendLayerRecord, UI_TRANSFER_ERROR_CODE } from "./transferStream";
@@ -320,9 +323,9 @@ function applySvgRadialTruth(
         const p0 = { x: Number(handles[0].x), y: Number(handles[0].y) };
         const p1 = { x: Number(handles[1].x), y: Number(handles[1].y) };
         const u = { x: p1.x - p0.x, y: p1.y - p0.y };
-        const ratio = svgRadialAxisRatio(gradient, width, height, u);
-        if (ratio === null) continue;
-        const minorEnd = { x: p0.x - u.y * ratio, y: p0.y + u.x * ratio };
+        const minor = svgRadialMinorVector(gradient, width, height, u);
+        if (minor === null) continue;
+        const minorEnd = { x: p0.x + minor.x, y: p0.y + minor.y };
         const transform = getResultArrayByThreePoints([p0, p1, minorEnd]);
         if (isFiniteTransform(transform)) paint.gradientTransform = transform;
     }
@@ -539,6 +542,18 @@ export async function collectSingleNodeExport(
 
         setNodeDebug("analyse");
         let nodeJson: any = analyseNodes(node);
+        const connectorSvg = takeConnectorSvg(nodeId);
+        if (connectorSvg) nodeJson.connectorSvg = connectorSvg;
+        if (Array.isArray(nodeJson.layoutGrids) && nodeJson.layoutGrids.length === 0) {
+            try {
+                nodeJson.layoutGrids = await readResolvedLayoutGrids(node, page, mg.document);
+            } catch (error) {
+                if (isOutOfMemoryError(error)) throw error;
+                state.logDiagnostic("warn", "[MasterGo2Figma] Unable to resolve layout grids", {
+                    node: nodeDebug, error: describeError(error)
+                });
+            }
+        }
 
         setNodeDebug("enrich-boolean");
         await enrichBooleanOperationExport(node, nodeJson, childNodes);
@@ -551,6 +566,9 @@ export async function collectSingleNodeExport(
 
         setNodeDebug("enrich-radial-gradient");
         await enrichRadialGradientTruth(node, nodeJson);
+
+        setNodeDebug("enrich-image-paint");
+        await enrichImagePaintTruth(node, nodeJson);
 
         setNodeDebug("override-layout");
         overrideExportLayoutFromSourceNode(nodeJson, node);
@@ -571,6 +589,11 @@ export async function collectSingleNodeExport(
             childIds,
             props: nodeJson
         };
+
+        if (nodeJson?.blend?.isMask) {
+            const maskVisible = safeRead(() => (node as any).isMaskVisible, undefined);
+            if (typeof maskVisible === "boolean") layerRecord.maskRendersFill = maskVisible;
+        }
 
         // Capture the child count as a plain number (no node references kept
         // alive), then snapshot complexity lazily: the snapshot costs ~10

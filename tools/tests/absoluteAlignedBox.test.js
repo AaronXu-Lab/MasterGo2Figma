@@ -51,3 +51,29 @@ test('absolute right-pinned header follows parent fill and child hug sizes',()=>
  assert.deepEqual(position(layout,{width:480,height:56},{width:420,height:56},node),{x:297,y:16});
  assert.equal(position({...layout,layoutPositioning:'AUTO'},{width:480},{width:420},node),null);
 });
+
+test('ordinary frame stretch children recover source dimensions after parent assembly',()=>{
+ const layout={layoutPositioning:'AUTO',layoutMode:'NONE',width:224,height:48};
+ const parentLayout={layoutMode:'NONE',width:224,height:48};
+ const constraints={horizontal:'STRETCH',vertical:'STRETCH'};
+ assert.deepEqual(stretch(layout,parentLayout,{layoutMode:'NONE',width:224,height:48},constraints),{width:224,height:48});
+ assert.deepEqual(stretch(layout,parentLayout,{layoutMode:'NONE',width:240,height:60},constraints),{width:240,height:60});
+ assert.equal(stretch(layout,parentLayout,{layoutMode:'VERTICAL',width:224,height:48},constraints),null);
+});
+
+const refreshPart=src.slice(src.indexOf('export function refreshNativeGroupOffsets('),src.indexOf('function normalizeDeferredLayoutForNativeGroupParent('));
+const refreshJS=esbuild.transformSync(refreshPart.replace(/export /g,''),{loader:'ts'}).code;
+const refresh=new Function('isRemovedNode',refreshJS+';return refreshNativeGroupOffsets;')(n=>!n||n.removed);
+test('nested native groups snapshot their final enclosing coordinates before layout restore',()=>{
+ const inner={id:'inner',type:'GROUP',x:420,y:416};
+ const outer={id:'outer',type:'GROUP',x:420,y:320};
+ const offsets={inner:{x:0,y:96},outer:{x:420,y:320}};
+ refresh([{node:{parent:inner}},{node:{parent:outer}},{node:{removed:true,parent:inner}},
+  {node:{parent:{id:'rotated',type:'GROUP',x:10,y:20}}}],offsets);
+ assert.deepEqual(offsets,{inner:{x:420,y:416},outer:{x:420,y:320}});
+ // Later auto-layout changes must not mutate the source snapshot.
+ inner.y=104;
+ assert.deepEqual(offsets.inner,{x:420,y:416});
+ assert.equal(967+offsets.inner.x,1387);
+ assert.equal(8+offsets.inner.y,424);
+});

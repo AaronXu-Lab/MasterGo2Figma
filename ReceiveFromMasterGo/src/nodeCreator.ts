@@ -1,3 +1,4 @@
+import { localConnectorSvg } from "./appliers/connectorSvg";
 import { localEllipseArcSvg } from "./appliers/ellipseArcSvg";
 import { roundedArcNetwork } from "./appliers/roundedArc";
 import { state } from "./state";
@@ -218,10 +219,12 @@ export async function createNodeFromData(data: any): Promise<SceneNode | null> {
                 node = figma.createSlice();
                 break;
             case "CONNECTOR":
+                const connectorSvg = localConnectorSvg(data);
+                if (connectorSvg) { node = figma.createNodeFromSvg(connectorSvg); break; }
                 const connectorVector = figma.createVector();
                 node = connectorVector;
                 if (!data.connectorFallbackPolyline) data.connectorFallbackPolyline = true;
-                if (!hasUsableVectorNetwork(data.vectorNetwork)) {
+                if (!data.connectorRouteExplicit || !hasUsableVectorNetwork(data.vectorNetwork)) {
                     data.vectorNetwork = createConnectorVectorNetworkFromData(data, null);
                 }
                 if (data.vectorNetwork) await applyVectorNetwork(connectorVector, data.vectorNetwork, data);

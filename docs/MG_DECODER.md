@@ -828,6 +828,7 @@ Paint child record body (after `01 <id> 00 02 <ref> 00 03 <sort> 00`), see `mgPa
     narrow extended sample would need a new discriminator. Before 2026-07-10 the parser rejected
     the unknown 01 tag and **dropped the whole paint**, which is why 0710-2 radial fills
     vanished while linear gradients survived.
+  - **斜向、纵轴主导的 bare/chain 径向渐变（2026-10-01）**：minor 轴须在像素空间与 major 垂直；设归一化 major 为 `(ux,uy)`，scalar 为 `r`，节点宽高为 `w,h`，minor 为 `(-uy*r, ux*r*(w/h)^2)`。旧公式漏了第二分量的宽高比，宽矩形上颜色位置明显错位。1001 原生 SVG（1080×56）给出旋转82.1509427°、半径112.1047225/647.1840727，与修正矩阵吻合；Figma参数探针也重现原生描边。轴对齐与正方形结果不变；extended、横轴主导bare分支保持原规则，不将单样本结论扩展到未验证编码。旧汇总1631条记录逐条比较0变化。
   - **ZIP baselines are NOT ground truth for this ratio.** The 2026-07-11 ZIP carries 0.4117 for
     the Tesla vignette — MasterGo's plugin API exposes only two handles plus a transform built
     from the folded `min(ratio, 2|p1−p0|/ratio)`, which disagrees with MasterGo's own renderer
@@ -902,8 +903,8 @@ runCount × ( 01 <sortId> 00                 fractional-index sort code ("a0", "
              02 <run text, UTF-8> 00
              03 <styleRef> 00               → text style table entry
              05 <glyphCount> <glyphCount × 2 zero-floats>     per-glyph x/y
-             06 01 <"Family/Style/Version …"> 00              font string
-             07 <glyphCount> <glyphCount × (00 <LEB128 glyphId>)> 00 )
+             06 <fontCount> <fontCount × fontString 00>       primary + fallback fonts
+             07 <glyphCount> <glyphCount × (fontIndex <LEB128 glyphId>)> 00 )
 [08 <b>]
 09 <count> color runs: [01 <start>] 02 <end> 03 <paintRef> 00  (byte offsets)
 [0a <defaultStyleRef> 00]
@@ -919,8 +920,8 @@ runCount × ( 01 <sortId> 00                 fractional-index sort code ("a0", "
   name-keyed `mgFidelityStyledTextSegments` fixture is deleted).
 - Glyph tables consume strictly sequentially (zero-floats are 1 byte for 0, else 4); any
   structural violation aborts the parser and falls back to the legacy heuristics.
-- Caveats: color-run start/end offsets are single bytes — texts > 255 UTF-16 units are
-  unverified; CJK run offsets assumed UTF-16 (only ASCII multi-run samples exist so far).
+- Color-run boundaries are LEB128 Unicode code-point offsets. Map astral characters to
+  UTF-16 before combining with font runs or applying Figma ranges (2026-10-01).
 
 ### Text style table (`mgScanFontStyles`)
 Entries (interleaved with compact non-font shells `05 <b> 00 00`):
@@ -1496,3 +1497,63 @@ live FILL axes when resizing a fixed axis, resolves quarter-turn logical stretch
 and restores right/center absolute anchors after parent FILL and child HUG settle.
 Only left-overhanging absolute labels preserve their aligned source box; ordinary
 right-pinned HUG containers must not be forced to the template width.
+
+
+## 2026-10-01 · 0930 one-pixel container dimensions
+
+The omitted `0e`/`0f` default **1** also applies to concrete FRAME, COMPONENT,
+COMPONENT_SET and INSTANCE boxes, not just RECTANGLE. In 测试 0930, component
+`9:098` and instance `9:135` both store `0e 87 00 00 62` (width 354), omit `0f`,
+and have ZIP height 1. The instance carries `1a 9:098` and container fields
+`06 01 17 02`: its own box still uses the default dimension; templateRef alone
+does not mean that its size is inherited. Explicit zero remains zero.
+
+Apply the default only to non-slash records with concrete container metadata.
+Bare stubs, non-instance template mirrors, GROUP/BOOLEAN derived bounds and
+vector geometry retain their existing sparse/inheritance behavior. Keep the
+per-axis `hasExplicitW/H` flags false for omitted fields. Synthesized children
+continue to copy/scale template dimensions during expansion.
+
+## 2026-10-01 · 测试 1001：记录边界、布局网格与蒙版显隐
+
+- 无排序码母版的候选 `01 <id> 00 04 <name>` 必须包含有效 UTF-8 名称。
+  Connector 端点同样有 `01 <nodeId> 00 04 <y-float>`；将它当作母版会截断
+  外层 Connector，并提前占用真实实例 ID。真实 typed 记录优先于 typeless 候选。
+  本例恢复 63 条缺失记录，5 条竖直 Connector 的端点与箭头重新可解析。
+- Trailer `28 <id> 00` 指向布局网格注册表。已验证的列网格子记录：
+  `01 <id> 00 02 <registry> 00 03 <sort> 00 04 02`，字段 `05` 为 ARGB
+  四个 zero-float，`09` 为列数 float，`0a` 为槽宽 float，`0c 01` 为拉伸。
+  本例 5 个组件共享 `19:2028`：24 列、槽宽 20、边距 0、FF3D00/12%。
+  当前原生解码仅接受此已验证字段集合；未验证的网格类型与配置不猜测。
+- **Trailer `27 00` 显式关闭蒙版自身可见性，优先于 `1e 01`。**
+  旧文档把 `1e` 直接等同于蒙版自身填充显隐不够准确。新发送端导出
+  MasterGo API `isMaskVisible` 为 record 级 `maskRendersFill`；1001 共 496
+  个可见/隐藏子树内的蒙版均为 false，对应原始/模板 `27=0,37=1`，其中
+  485 个仍有 `1e=1`。缺少显式 `27` 时暂保留旧字段回退规则。
+- Connector guide 列表按顺序解释：缺省 axis=0 是竖线 x（字段02，缺省0）；
+  axis=1 是横线 y（字段03，缺省0）。相邻 guides 交点及首尾接点组成路径。
+  不再只接受单条横向 guide。端点 magnet 0/1/2/3=TOP/RIGHT/BOTTOM/LEFT。
+
+### 2026-10-01 · 多字体 run 与 Unicode 色段（测试 1001）
+
+`06` 后是字体字符串列表数量，不是 presence flag。Segoe UI 的中英文混排可为 2，第二项为 fallback48；`07` 每个 glyph 的首字节为字体列表索引（观察到 0/1），不能要求恒为 0。保留首项作为可编辑文本的主字体，顺序消费全部回退项。旧解析器在此失败后退回单字符串猜测，14 处文字差异中的 12 处因此只留下一个 run。
+
+原生 `09` 色段边界按 Unicode code point 计数；含私有区 astral bullet / emoji 的样本全长为 168 code points、175 UTF-16 units。解析后须映射为 Figma 的 UTF-16 边界再与字体 run 合并。旧 ZIP 也会输出 code-point styledTextSegments；接收端只在连续覆盖整段、末端恰等于 code-point 长度时转换，已为 UTF-16 或非完整覆盖的范围保持不变。此段取代上文“仅 ASCII、>255 未验证”的旧 caveat；色段边界已有 LEB128 支持。
+
+## 2026-10-01 · 测试 1001：变量缓存与显式空文字
+
+- 变量首个声明 mode 的 alias 是当前值，即使变量自身已有 paint，也优先解析 alias。
+  `19:08984` 的缓存为白色，两个 mode 均指向黑色88%的 `19:01659`；
+  `19:05368` 的 Light alias 指向 `19:05370`，原生图片与 ZIP 均为黑色88%，
+  自身白色缓存不能覆盖它。沿完整 alias 链解析后再统一赋值，循环或缺目标保留缓存，
+  避免依赖二进制记录顺序。本轮 paint mismatch 97→22，旧汇总fixture记录未变。
+- TEXT typed body `03 01 07 <varint bitmap> 0a <defaultStyleRef> 00 00`，无 `06`
+  run 表，是显式空内容；两条实例 override 的 bitmap 都为 `82 82 11`，ZIP字符均为空。
+  顺序消费头部、bitmap、样式和结束标记才接受；没有完整该结构仍继承模板文字。
+  下游必须区分 `characters=""` 与缺失，不能用 `characters || name` 回填 `Input`。
+  本轮 text mismatch 2→0；位图各 bit 的独立含义仍未解码。
+
+- 图片 `0b/01` 枚举修正：0=FILL，1=FIT，**2=STRETCH**，3=CROP，4=TILE。
+  1001 的 `19:00847` 明确存2，MasterGo 图片填充面板显示“拉伸”；旧2=TILE映射错误。
+  Figma 用 CROP + identity imageTransform 保留全图非等比拉伸；不应用裁切窗口。
+  ZIP 当前将 STRETCH 降为 FILL，是导出端待确认候选，不用该降级值覆盖原生语义。

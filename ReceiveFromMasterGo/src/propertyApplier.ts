@@ -1,3 +1,4 @@
+import { localConnectorSvg } from "./appliers/connectorSvg";
 import { localEllipseArcSvg } from "./appliers/ellipseArcSvg";
 import { roundedArcNetwork } from "./appliers/roundedArc";
 import { applyUniversalProperties } from "./appliers/universal";
@@ -10,10 +11,15 @@ import { safeSet } from "../../shared/utils";
 
 export async function applyProperties(node: any, data: any) {
     if (!node || !data) return;
+    // MasterGo connectors never occupy auto-layout flow slots. Figma's
+    // vector fallback must preserve that semantic even if the API says AUTO.
+    if (data.sourceType === "CONNECTOR" && data.layout) {
+        data = { ...data, layout: { ...data.layout, layoutPositioning: "ABSOLUTE" } };
+    }
 
     // The SVG children already carry native fills and outlined strokes.
     // Keep the full-size wrapper transparent; painting it would fill the hole.
-    const arcSvgWrapper = node.type === "FRAME" && localEllipseArcSvg(data);
+    const arcSvgWrapper = node.type === "FRAME" && (localEllipseArcSvg(data) || localConnectorSvg(data));
     await applyUniversalProperties(node, arcSvgWrapper
         ? { ...data, geometry: { fills: [], strokes: [], strokeWeight: 0 }, clipsContent: false }
         : data);

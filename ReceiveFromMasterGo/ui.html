@@ -320,10 +320,11 @@
 
     // Radial/angular/diamond: center p0, major-axis end p1, and the minor axis
     // as the major axis rotated 90° scaled by `ratio` (1 = circular).
-    function mgRadialGradientTransform(p0, p1, ratio) {
+    // minorYScale corrects the evidenced vertical-frame pixel-space ellipse.
+    function mgRadialGradientTransform(p0, p1, ratio, minorYScale) {
       const ux = p1.x - p0.x, uy = p1.y - p0.y;
       const r = (isFinite(ratio) && ratio > 0) ? ratio : 1;
-      const vx = -uy * r, vy = ux * r;
+      const vx = -uy * r, vy = ux * r * (minorYScale || 1);
       const det = ux * vy - vx * uy;
       if (!isFinite(det) || Math.abs(det) < 1e-9) return [[0, 1, 0], [-1, 0, 1]];
       const inv = 0.5 / det;
@@ -367,13 +368,17 @@
     //     handles, direct for y-dominant (vertical reference frame). Diamond
     //     and angular gradients read 03 directly even when a chain is
     //     present (菱形 on 210×120: v2 = 9.3789), so only kind 2 defers.
+    // Bare vertical-frame slanted handles also need pixel-axis correction;
+    // keep metadata for both forms, without changing horizontal bare rules.
     // The transform is finalized per node in mgNativeProps via this
     // enumerable temp (record clones carry it; finalize strips it).
     function mgAttachRadialMeta(paint, kind, gradient, p0, p1) {
       if (kind === 2 && !(gradient.majorLen2 > 0) &&
-          isFinite(gradient.ratioNorm) && gradient.ratioNorm > 0 &&
           isFinite(gradient.ratio) && gradient.ratio > 0) {
-        paint.__mgRadialMeta = { p0: { x: p0.x, y: p0.y }, p1: { x: p1.x, y: p1.y }, ratio: gradient.ratio };
+        paint.__mgRadialMeta = {
+          p0: { x: p0.x, y: p0.y }, p1: { x: p1.x, y: p1.y }, ratio: gradient.ratio,
+          conversionChain: isFinite(gradient.ratioNorm) && gradient.ratioNorm > 0
+        };
       }
       return paint;
     }
@@ -396,9 +401,18 @@
         if (!isFinite(w) || !isFinite(h) || w <= 0 || h <= 0) continue;
         const uxPx = (meta.p1.x - meta.p0.x) * w;
         const uyPx = (meta.p1.y - meta.p0.y) * h;
-        if (Math.abs(uxPx) <= Math.abs(uyPx)) continue; // vertical frame — stored ratio is already final
         const aspect = w / h;
-        paintEntry.gradientTransform = mgRadialGradientTransform(meta.p0, meta.p1, meta.ratio * aspect * aspect);
+        if (Math.abs(uxPx) <= Math.abs(uyPx)) {
+          // Vertical-frame bare/chain records keep the minor X component,
+          // but the perpendicular axis is orthogonal in pixels, not in the
+          // normalized square. Native SVG 1001: 1080×56, radii
+          // 112.1047225/647.1840727, rotation 82.1509427°. Axis-aligned
+          // handles are unchanged. Extended and horizontal bare encodings
+          // retain their existing rules until separately evidenced.
+          paintEntry.gradientTransform = mgRadialGradientTransform(meta.p0, meta.p1, meta.ratio, aspect * aspect);
+        } else if (meta.conversionChain) {
+          paintEntry.gradientTransform = mgRadialGradientTransform(meta.p0, meta.p1, meta.ratio * aspect * aspect);
+        }
       }
     }
 
@@ -496,8 +510,8 @@
     //   06 <runCount>
     //   runCount × ( 01 <sortId> 00  02 <text> 00  03 <styleRef> 00
     //                05 <glyphCount> <glyphCount × 2 zero-floats>
-    //                06 01 <fontString "Family/Style/Version …"> 00
-    //                07 <glyphCount> <glyphCount × (00 <LEB128 glyphId>)> 00 )
+    //                06 <fontCount> <fontCount × fontString 00>
+    //                07 <glyphCount> <glyphCount × (fontIndex <LEB128 glyphId>)> 00 )
     // Runs are stored in arbitrary order; the fractional-index sortId gives the
     // character order. Returns null on any structural violation so callers can
     // fall back to the legacy heuristics. Offsets are UTF-16 code units.
@@ -543,25 +557,30 @@
             if (p >= end) return null;
           }
         }
-        if (bytes[p] === 0x06 && bytes[p + 1] === 0x01) {
-          const fs = mgReadCString(bytes, p + 2, end);
-          if (!fs) return null;
-          fontString = fs.text;
-          p = fs.end + 1;
-        } else if (bytes[p] === 0x06 && bytes[p + 1] === 0x00) {
-          // Explicit-empty font string. Leaving it unconsumed stranded `p` on
-          // the `06`, so the NEXT run's `01` tag never matched and the whole
-          // multi-run parse bailed to the legacy single-string fallback —
-          // "9:41" came back as just "1" (0806 status bar).
+        let fontCount = null;
+        if (bytes[p] === 0x06) {
+          // A list of primary + fallback fonts, not a presence flag. Glyphs
+          // below select a list index; fallback fonts must not replace the
+          // authored primary font used for editable text.
+          fontCount = bytes[p + 1];
+          if (fontCount === undefined || fontCount > 64) return null;
           p += 2;
+          for (let f = 0; f < fontCount; f++) {
+            const fs = mgReadCString(bytes, p, end);
+            if (!fs) return null;
+            if (f === 0) fontString = fs.text;
+            p = fs.end + 1;
+          }
         }
         if (bytes[p] === 0x07) {
           const idCount = bytes[p + 1];
           p += 2;
           for (let g = 0; g < idCount; g++) {
-            if (bytes[p] !== 0x00) return null;
+            const fontIndex = bytes[p];
+            if (fontIndex === undefined || (fontCount > 0 ? fontIndex >= fontCount : fontIndex !== 0)) return null;
             p++;
             while (p < end && (bytes[p] & 0x80)) p++;
+            if (p >= end) return null;
             p++;
           }
           if (bytes[p] !== 0x00) return null; // glyph-id table terminator
@@ -584,10 +603,26 @@
       return { runs: runs, nextOffset: p };
     }
 
+    function mgParseEmptyText(bytes, start, end) {
+      let p = start;
+      while (p + 1 < end && bytes[p] >= 1 && bytes[p] <= 3 && bytes[p + 1] < 16) p += 2;
+      // Empty instance text retains an override bitmap and default style,
+      // but has no font-run table. A merely absent text payload still inherits.
+      if (bytes[p++] !== 0x07) return null;
+      const mask = mgReadVarint(bytes, p);
+      p = mask.next;
+      if (!Number.isFinite(mask.value) || p >= end || bytes[p++] !== 0x0a) return null;
+      const style = mgReadCString(bytes, p, end);
+      if (!style || !/^[0-9]+:[0-9A-Za-z]+$/.test(style.text) || bytes[style.end + 1] !== 0) return null;
+      return { characters: "", charactersFromRuns: true, firstStyleRef: style.text, fontRuns: [] };
+    }
+
     function mgDecodeTextDetails(bytes, str, start, end, jt) {
       if (jt < 0) return {};
       const utf8 = new TextDecoder("utf-8");
       const local = start + jt;
+      const empty = mgParseEmptyText(bytes, local + 2, end);
+      if (empty) return empty;
 
       // Preferred path: structured font runs (each run carries its own text,
       // style ref, and font string). Characters are the sorted-run concat.
@@ -598,7 +633,7 @@
         const fontName = runs[0].fontString ? mgDecodeFontString(runs[0].fontString) : null;
         // The color-run table (`09 <count>`, [start,end) + paintRef) sits after
         // the font runs; scan from there with the true character count.
-        const styledRuns = mgParseTextRuns(bytes, parsed.nextOffset, end, characters.length);
+        const styledRuns = mgParseTextRuns(bytes, parsed.nextOffset, end, characters.length, characters);
         return {
           characters: characters,
           charactersFromRuns: true,
@@ -626,11 +661,13 @@
       const text = utf8.decode(bytes.subarray(local, Math.min(end, local + 1800)));
       const fontMatch = /([A-Za-z0-9 ._-]+\/(?:Regular|Bold|SemiBold|Medium|Light|Black|Italic|Thin|ExtraBold|ExtraLight)[^|\u0000]*)/.exec(text);
       if (fontMatch) fontName = mgDecodeFontString(fontMatch[1]);
-      const styledRuns = characters ? mgParseTextRuns(bytes, local + 2, end, characters.length) : null;
+      const styledRuns = characters ? mgParseTextRuns(bytes, local + 2, end, characters.length, characters) : null;
       return { characters: characters, fontName: fontName, styledRuns: styledRuns };
     }
 
-    function mgParseTextRuns(bytes, start, end, characterCount) {
+    function mgParseTextRuns(bytes, start, end, characterCount, characters) {
+      const codePoints = typeof characters === "string" ? Array.from(characters) : null;
+      const sourceCount = codePoints ? codePoints.length : characterCount;
       for (let p = start; p + 2 < end; p++) {
         if (bytes[p] !== 0x09) continue;
         const count = bytes[p + 1];
@@ -679,7 +716,14 @@
           runs.push({ start: runStart, end: runEnd, paintRef: paintRef });
           previousEnd = runEnd;
         }
-        if (valid && runs.length === count && previousEnd === characterCount) return runs;
+        if (valid && runs.length === count && previousEnd === sourceCount) {
+          if (sourceCount !== characterCount) {
+            const offsets = [0];
+            for (const character of codePoints) offsets.push(offsets[offsets.length - 1] + character.length);
+            return runs.map(run => ({ ...run, start: offsets[run.start], end: offsets[run.end] }));
+          }
+          return runs;
+        }
       }
       return null;
     }
@@ -732,9 +776,9 @@
       return { value: mgDecFloat(bytes, p), next: p + 4 };
     }
 
-    // 4=TILE observed on the 0712-3 specimen (round-tripped from Figma); the
-    // legacy 2=TILE mapping is kept for the older fixtures.
-    const MG_IMAGE_SCALE_MODE = { 0: "FILL", 1: "FIT", 2: "TILE", 3: "CROP", 4: "TILE" };
+    // Native 2 is STRETCH (verified in the MasterGo fill panel). Figma uses
+    // CROP with an identity transform for full-image non-uniform stretching.
+    const MG_IMAGE_SCALE_MODE = { 0: "FILL", 1: "FIT", 2: "CROP", 3: "CROP", 4: "TILE" };
     // Sequential adjustment slots, cross-checked against the 0920 ZIP.
     const MG_IMAGE_FILTER_FIELDS = { 1: "contrast", 2: "exposure", 3: "highlights", 4: "saturation", 5: "shadows", 6: "temperature", 7: "tint", 8: "hue" };
     // MasterGo's default #D8D8D8 fill: referenced by "default fill" paint
@@ -840,7 +884,7 @@
           if (p >= end) return null;
           const t = bytes[p++];
           if (t === 0x00) return img;
-          if (t === 0x01) { img.scaleMode = bytes[p++]; continue; } // 0=FILL 1=FIT 2=CROP 3=TILE
+          if (t === 0x01) { img.scaleMode = bytes[p++]; continue; } // 0=FILL 1=FIT 2=STRETCH 3=CROP 4=TILE
           if (t === 0x02) { img.ratio = zfloat(); continue; }
           if (t === 0x03) {
             if (bytes[p] === 0x00) { p++; continue; } // explicit-empty path (0711-3)
@@ -934,6 +978,7 @@
         paint.visible = visible;
         if (opacity !== null) paint.opacity = opacity;
         if (filters) for (const key in filters) paint.filters[key] = filters[key];
+        if (image.scaleMode === 2) paint.imageTransform = [[1, 0, 0], [0, 1, 0]];
         // CROP placement rect (04 sub-object): the image's DISPLAY rect in
         // node-local units (0712-3: node 150×96 with a centered 50% crop
         // stores x=-75 y=-48 w=300 h=192). The Figma imageTransform needs the
@@ -941,7 +986,7 @@
         // [[nodeW/w, 0, -x/w], [0, nodeH/h, -y/h]] and strips the temp field.
         // (The zip exporter drops the crop window entirely — this exceeds
         // baseline parity by one accepted deep-diff row per cropped image.)
-        if (paint.scaleMode === "CROP" && image.cropRect &&
+        if (image.scaleMode === 3 && image.cropRect &&
             isFinite(image.cropRect.w) && image.cropRect.w > 0 &&
             isFinite(image.cropRect.h) && image.cropRect.h > 0) {
           paint.__mgCropRect = {
@@ -1036,8 +1081,8 @@
         paints[ref].sort((a, b) => (a.code < b.code ? -1 : a.code > b.code ? 1 : 0));
         paints[ref] = paints[ref].map(entry => entry.paint);
       }
-      // Variable ALIASES (0920): a color variable can hold no paint of its
-      // own and point at another variable instead. The link lives in the
+      // Variable ALIASES: the selected mode's alias overrides the cached base
+      // paint as well as filling a missing paint. The link lives in the
       // id-relation table, one row per mode:
       //   `01 <A>/<mode> 00 02 <B> 00 04 01 05 <A>/<mode>:0:0 00 06 02 00`
       // (color-error 3:06851 → .red-6 3:06852 in all three modes). Without
@@ -1058,12 +1103,21 @@
           aliasOrder[m[1]] = order;
         }
       }
+      const resolvedAliases = {};
       for (const a in alias) {
-        if (paints[a] && paints[a].length) continue;
+        const seen = new Set([a]);
         let b = alias[a], hops = 0;
-        while (b && !(paints[b] && paints[b].length) && hops++ < 8) b = alias[b];
-        if (b && paints[b] && paints[b].length) paints[a] = paints[b];
+        while (b && alias[b] && !seen.has(b) && hops++ < 8) {
+          seen.add(b);
+          b = alias[b];
+        }
+        // Unresolved/cyclic aliases keep the original fallback. Resolve all
+        // chains before assigning so record order cannot change the result.
+        if (b && !seen.has(b) && !alias[b] && paints[b] && paints[b].length) {
+          resolvedAliases[a] = paints[b];
+        }
       }
+      for (const a in resolvedAliases) paints[a] = resolvedAliases[a];
       return paints;
     }
 
@@ -1130,6 +1184,38 @@
         table[ref].sort((a, b) => (FMT_ORDER[a.format] - FMT_ORDER[b.format]) ||
           (a.code < b.code ? -1 : a.code > b.code ? 1 : 0));
         table[ref] = table[ref].map(entry => entry.setting);
+      }
+      return table;
+    }
+
+    // Grid registry referenced by trailer 28. The observed COLUMNS record
+    // has kind 04=2, ARGB 05, float count 09, gutter 0a, alignment 0c=1.
+    // Walk fields in order; do not search float payloads for tags.
+    function mgScanLayoutGrids(bytes, str) {
+      const table = {};
+      const re = /\x01([0-9]+:[0-9A-Za-z]+)\x00\x02([0-9]+:[0-9A-Za-z]+)\x00\x03([\x20-\x7e]+)\x00\x04\x02/g;
+      let match;
+      while ((match = re.exec(str))) {
+        let p = match.index + match[0].length;
+        const grid = { pattern: "COLUMNS", alignment: "STRETCH", visible: true,
+          color: { r: 1, g: 0, b: 0, a: 0.1 }, count: 1, gutterSize: 0, offset: 0 };
+        let ok = false;
+        while (p < bytes.length) {
+          const tag = bytes[p++];
+          if (tag === 0) { ok = true; break; }
+          if (tag === 5) {
+            const values = [];
+            for (let i = 0; i < 4; i++) { const value = mgReadZeroFloat(bytes, p); values.push(value.value); p = value.next; }
+            grid.color = { a: values[0], r: values[1], g: values[2], b: values[3] };
+          } else if (tag === 9 || tag === 10) {
+            const value = mgReadZeroFloat(bytes, p); p = value.next;
+            grid[tag === 9 ? "count" : "gutterSize"] = value.value;
+          } else if (tag === 12 && bytes[p] === 1) { p++; }
+          else break;
+        }
+        if (ok && Number.isInteger(grid.count) && grid.count > 0) {
+          (table[match[2]] = table[match[2]] || []).push(grid);
+        }
       }
       return table;
     }
@@ -1394,20 +1480,29 @@
         connectorLineType: connector.lineType === 0 ? "ELBOWED" : "STRAIGHT",
         connectorCornerRadius: connector.radius
       };
-      // Observed manual horizontal guide: axis=1, field03=local y.
-      // Other guide spellings retain the importer's automatic route fallback.
-      if (connector.lineType === 0 && connector.guides.length === 1 &&
-          connector.guides[0].axis === 1 && Number.isFinite(connector.guides[0].y)) {
-        const y = connector.guides[0].y;
-        const points = [start, { x: start.x, y }, { x: end.x, y }, end];
+      const magnets = ["TOP", "RIGHT", "BOTTOM", "LEFT"];
+      props.connectorStart = { endpointNodeId: connector.start.nodeId, magnet: magnets[connector.start.magnet || 0] };
+      props.connectorEnd = { endpointNodeId: connector.end.nodeId, magnet: magnets[connector.end.magnet || 0] };
+      if (connector.lineType === 0 && connector.guides.length > 0) {
+        props.connectorRouteExplicit = true;
+        const points = [start];
+        for (const guide of connector.guides) {
+          const last = points[points.length - 1];
+          points.push(guide.axis === 1 ? { x: last.x, y: guide.y || 0 } : { x: guide.x || 0, y: last.y });
+        }
+        const last = points[points.length - 1];
+        const lastGuide = connector.guides[connector.guides.length - 1];
+        points.push(lastGuide.axis === 1 ? { x: end.x, y: last.y } : { x: last.x, y: end.y });
+        points.push(end);
+        const clean = points.filter((v, i) => i === 0 || Math.hypot(v.x - points[i-1].x, v.y - points[i-1].y) > 0.001);
         props.vectorNetwork = {
-          vertices: points.map((v, i) => ({ ...v,
-            strokeCap: i === 0 ? cap(connector.startCap) : i === 3 ? cap(connector.endCap) : "NONE",
-            cornerRadius: i === 1 || i === 2 ? Math.min(connector.radius,
-              Math.hypot(v.x-points[i-1].x,v.y-points[i-1].y)/2,
-              Math.hypot(v.x-points[i+1].x,v.y-points[i+1].y)/2) : 0
+          vertices: clean.map((v, i) => ({ ...v,
+            strokeCap: i === 0 ? cap(connector.startCap) : i === clean.length - 1 ? cap(connector.endCap) : "NONE",
+            cornerRadius: i > 0 && i < clean.length - 1 ? Math.min(connector.radius,
+              Math.hypot(v.x-clean[i-1].x,v.y-clean[i-1].y)/2,
+              Math.hypot(v.x-clean[i+1].x,v.y-clean[i+1].y)/2) : 0
           })),
-          segments: [0,1,2].map(i => ({start:i,end:i+1,tangentStart:{x:0,y:0},tangentEnd:{x:0,y:0}})),
+          segments: clean.slice(1).map((_, i) => ({start:i,end:i+1,tangentStart:{x:0,y:0},tangentEnd:{x:0,y:0}})),
           regions: []
         };
       }
@@ -1638,8 +1733,9 @@
           // String fields: 23 sort code, 2a token JSON, 28/33 id refs,
           // 29 JSON (0920 full-editor trailers).
           if (t === 0x23 || t === 0x2a || t === 0x28 || t === 0x29 || t === 0x33) {
-            p++;
+            const refStart = ++p;
             while (p < end && bytes[p] !== 0x00) p++;
+            if (t === 0x28) fields.gridRef = str.slice(refStart, p);
             p++;
             continue;
           }
@@ -1742,6 +1838,8 @@
             if (t === 0x1f) fields.stretch = bytes[p + 1] === 1;
             if (t === 0x2f) fields.t2f = bytes[p + 1];
             if (t === 0x36) fields.t36 = bytes[p + 1];
+            if (t === 0x27) fields.t27 = bytes[p + 1];
+            if (t === 0x37) fields.t37 = bytes[p + 1];
             if (t === 0x2c) fields.strokeCap = bytes[p + 1];
             // 2e 01 = layoutPositioning ABSOLUTE (ignore auto-layout).
             // Cross-tab on 统一集: all 5 v2-ABSOLUTE nodes carry it, none of
@@ -1780,6 +1878,8 @@
     }
 
     function mgMaskRendersFill(trailer) {
+      // Explicit mask visibility overrides the older general paint flag.
+      if (trailer && trailer.t27 !== undefined) return trailer.t27 !== 0;
       // 09008's two painted button masks use the paired 2f=1 / 36=1
       // spelling instead of legacy 1e=1. Other masks lack this pair. Do not
       // infer either field's standalone semantics or enable every new mask.
@@ -2455,6 +2555,7 @@
       const fontStyles = mgScanFontStyles(bytes, str);
       const effectTable = mgScanEffects(bytes, str);
       const exportTable = mgScanExportSettings(bytes, str);
+      const gridTable = mgScanLayoutGrids(bytes, str);
       // The sort code is PRINTABLE ASCII (a base-95 key: `a0`, `a;`, `a P`,
       // `a!`). `[^\x00]+` was too loose: the file also holds an id-link table
       // shaped `01 <id> 00 02 <id> 00 03 <01|03> 04 01 05 <id>:6:<n> 00 00`,
@@ -2483,6 +2584,16 @@
       const cre = new RegExp("\\x01(" + ID + ")\\x00\\x04", "g");
       let componentRootMarks = 0;
       while ((m = cre.exec(str))) {
+        // Connector endpoint objects also spell 01 <id> 00 04 <y-float>.
+        // A component root must have an actual UTF-8 name, not scalar bytes;
+        // false markers would truncate the enclosing connector record.
+        const nameStart = m.index + m[0].length;
+        const nameEnd = str.indexOf("\x00", nameStart);
+        if (nameEnd <= nameStart) continue;
+        try {
+          const name = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(nameStart, nameEnd));
+          if (/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(name)) continue;
+        } catch (error) { continue; }
         componentRootMarks++;
         marks.push({
           start: m.index,
@@ -2540,7 +2651,6 @@
         const mk = marks[i];
         const end = (i + 1 < marks.length) ? marks[i + 1].start : Math.min(mk.start + 6000, bytes.length);
         const blk = str.slice(mk.start, end);
-        if (nodes[mk.recId]) continue;
         const fb = mk.end;
         const full = str.slice(fb, end);
         // Skip annotated node-coverage carriers (their own layer name starts
@@ -2555,6 +2665,10 @@
         const scalEnd = jt >= 0 ? jt : Math.min(120, full.length);
         const typeByte = jt >= 0 ? bytes[fb + jt + 1] : 0;
         const type = jt >= 0 ? (MG_TYPE[typeByte] || null) : null;
+        // Nested reference objects can share the codeless-root header. A
+        // later typed canvas record is authoritative over such a typeless
+        // candidate; keep first-wins ordering among actual typed records.
+        if (nodes[mk.recId] && (nodes[mk.recId].type || !type)) continue;
         const containerMeta = typeByte === 7 ? mgParseContainerMeta(bytes, fb + jt + 2) : null;
         const geomHash = typeByte === 1 ? mgReadVectorGeomHash(bytes, fb + jt + 2, end) : null;
         let cornerRadius = 0;
@@ -2595,7 +2709,15 @@
         // Older records can contain a damaged or partial scalar stream. Keep
         // the legacy readers only as a fallback; successful native parsing is
         // always authoritative and never mixes regex hits from float payloads.
-        const defaultSize = type === "RECTANGLE" && !scalar.templateRef && mk.recId.indexOf("/") < 0 ? 1 : 0;
+        // Concrete frame/component boxes share RECTANGLE's omitted-size
+        // default of 1 (0930: a 354×1 component and instance omit 0f).
+        // A concrete instance owns its box despite referencing a component;
+        // slash/bare stubs must still retain their sparse dimensions.
+        // GROUP/BOOLEAN bounds and vector geometry have separate fallbacks.
+        const hasDefaultBoxSize = type === "RECTANGLE" || (containerMeta && !containerMeta.bareStub &&
+          ["FRAME", "COMPONENT", "COMPONENT_SET", "INSTANCE"].indexOf(containerMeta.subtype) >= 0);
+        const ownsBoxSize = !scalar.templateRef || (containerMeta && containerMeta.subtype === "INSTANCE");
+        const defaultSize = hasDefaultBoxSize && ownsBoxSize && mk.recId.indexOf("/") < 0 ? 1 : 0;
         const fallbackW = mgReadFloatTag(bytes, full, 0x0e, 0, scalEnd, fb) || defaultSize;
         const fallbackH = mgReadFloatTag(bytes, full, 0x0f, 0, scalEnd, fb) || defaultSize;
         const fallbackXY = mgReadTransformXY(bytes, fb, fb + scalEnd);
@@ -2726,6 +2848,7 @@
           blendModeByte: scalar.t0d,
           strokeJoinByte: scalar.t12, strokeAlignByte: scalar.t13,
           dashPattern: scalar.dashPattern || null,
+          layoutGrids: trailer && gridTable[trailer.gridRef],
           trailer: trailer, textAutoResize: textAutoResize, arcData: arcData, arcCornerRadius: arcCornerRadius,
           shapePointCount: shapePointCount, shapeInnerRadius: shapeInnerRadius,
           textAlignH: textAlignH, textAlignV: textAlignV, textStyleRef: textStyleRef
@@ -3299,7 +3422,7 @@
       if (stretchValue && t !== "SECTION") props.layout.layoutAlign = "STRETCH";
       if (t === "CONNECTOR" && n.connector) Object.assign(props, mgConnectorProps(n.connector));
       if (t === "TEXT") {
-        props.characters = n.characters || n.name || "";
+        props.characters = n.characters != null ? n.characters : (n.name || "");
         props.textAlignHorizontal = MG_TEXT_ALIGN_H[n.textAlignH] || "LEFT";
         props.textAlignVertical = MG_TEXT_ALIGN_V[n.textAlignV] || "TOP";
         props.textAutoResize = n.textAutoResize || "NONE";
@@ -3400,6 +3523,7 @@
         } else if (frameFamily) {
           props.clipsContent = meta.clipsContent === undefined ? true : meta.clipsContent;
         }
+        if (n.layoutGrids) props.layoutGrids = n.layoutGrids;
         if (meta.layoutMode) props.layout.layoutMode = meta.layoutMode;
         const missingDefault = (mgShareModeActive &&
           (n.templateValues || n.templateRef || n.id.indexOf("/") >= 0)) ? 0 : 10;
@@ -4941,6 +5065,7 @@
           if (props[key] !== undefined) slim[key] = props[key];
         }
       }
+      if (props.layoutGrids !== undefined) slim.layoutGrids = props.layoutGrids;
       if (props.arcData !== undefined) slim.arcData = props.arcData;
       if (props.arcCornerRadius !== undefined) slim.arcCornerRadius = props.arcCornerRadius;
       if (props.booleanOperation !== undefined) slim.booleanOperation = props.booleanOperation;
@@ -5570,6 +5695,7 @@
       shouldInheritStroke: mgShouldInheritStroke,
       decodeNativeNodes: mgDecodeNativeNodes,
       decodeGeometryBlob: mgDecodeGeometryBlob,
+      scanLayoutGrids: mgScanLayoutGrids,
       parseContainerMeta: mgParseContainerMeta,
       parseTrailer: mgParseTrailer,
       fillContainerMeta: mgFillContainerMeta,
@@ -5579,6 +5705,7 @@
       parseConnector: mgParseConnector,
       connectorProps: mgConnectorProps,
       parseFontRuns: mgParseFontRuns,
+      parseEmptyText: mgParseEmptyText,
       scanPaints: mgScanPaints,
       scanFontStyles: mgScanFontStyles,
       scanEffects: mgScanEffects,
@@ -5593,6 +5720,7 @@
       coversTemplateParent: mgCoversTemplateParent,
       radialAxisRatio: mgRadialAxisRatio,
       radialGradientTransform: mgRadialGradientTransform,
+      finalizeRadialPaints: mgFinalizeRadialPaints,
       rebaseContainerByAnchor: mgRebaseContainerByAnchor,
       usesCenteredGroupResize: mgUsesCenteredGroupResize,
       collectPageComponentDependencies: mgCollectPageComponentDependencies,

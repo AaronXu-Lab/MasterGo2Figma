@@ -58,17 +58,20 @@ function parseSvgColor(raw: string | undefined): { r: number; g: number; b: numb
     return null;
 }
 
-function parseSvgTransform(raw: string | undefined): number[][] | null {
+export function parseSvgTransform(raw: string | undefined): number[][] | null {
     if (!raw) return IDENTITY;
     let result = IDENTITY;
-    const re = /(matrix|translate|scale)\s*\(([^)]*)\)/g;
+    const re = /([A-Za-z]+)\s*\(([^)]*)\)/g;
     let m: RegExpExecArray | null;
     let any = false;
+    let consumed = 0;
     const mul = (a: number[][], b: number[][]) => [
         [a[0][0] * b[0][0] + a[0][1] * b[1][0], a[0][0] * b[0][1] + a[0][1] * b[1][1], a[0][0] * b[0][2] + a[0][1] * b[1][2] + a[0][2]],
         [a[1][0] * b[0][0] + a[1][1] * b[1][0], a[1][0] * b[0][1] + a[1][1] * b[1][1], a[1][0] * b[0][2] + a[1][1] * b[1][2] + a[1][2]]
     ];
     while ((m = re.exec(raw))) {
+        if (raw.slice(consumed, m.index).replace(/[\s,]/g, "")) return null;
+        consumed = re.lastIndex;
         const args = m[2].split(/[\s,]+/).filter(Boolean).map(Number);
         if (args.some(v => !Number.isFinite(v))) return null;
         let step: number[][] | null = null;
@@ -78,15 +81,20 @@ function parseSvgTransform(raw: string | undefined): number[][] | null {
             step = [[1, 0, args[0]], [0, 1, args.length > 1 ? args[1] : 0]];
         } else if (m[1] === "scale" && args.length >= 1) {
             step = [[args[0], 0, 0], [0, args.length > 1 ? args[1] : args[0], 0]];
+        } else if (m[1] === "rotate" && (args.length === 1 || args.length === 3)) {
+            const angle = args[0] * Math.PI / 180;
+            const c = Math.cos(angle), s = Math.sin(angle);
+            const x = args[1] || 0, y = args[2] || 0;
+            step = [[c, -s, x - c * x + s * y], [s, c, y - s * x - c * y]];
         }
         if (!step) return null;
         result = mul(result, step);
         any = true;
     }
-    return any ? result : IDENTITY;
+    return any && !raw.slice(consumed).replace(/[\s,]/g, "") ? result : null;
 }
 
-function parseAttributes(tag: string): Record<string, string> {
+export function parseAttributes(tag: string): Record<string, string> {
     const attrs: Record<string, string> = {};
     const re = /([A-Za-z_][\w:-]*)\s*=\s*"([^"]*)"/g;
     let m: RegExpExecArray | null;
@@ -246,4 +254,21 @@ export function svgRadialAxisRatio(
         }
     }
     return null;
+}
+
+// Keep the SVG ellipse perpendicular in its own coordinate system. On a
+// non-square node, rotating normalized handles loses the physical direction.
+export function svgRadialMinorVector(
+    gradient: SvgRadialGradient, width: number, height: number,
+    u: { x: number; y: number }
+): { x: number; y: number } | null {
+    const ratio = svgRadialAxisRatio(gradient, width, height, u);
+    if (ratio === null) return null;
+    const w = gradient.objectBoundingBox ? 1 : width;
+    const h = gradient.objectBoundingBox ? 1 : height;
+    const x = -u.y * h / w, y = u.x * w / h;
+    const length = Math.hypot(x, y);
+    if (!(length > 0)) return null;
+    const scale = ratio * Math.hypot(u.x, u.y) / length;
+    return { x: x * scale, y: y * scale };
 }

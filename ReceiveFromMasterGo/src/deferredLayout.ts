@@ -25,6 +25,7 @@ export async function applyDeferredLayoutRestores(progress?: PostprocessProgress
 
     const records = state.deferredLayoutRestores;
     state.deferredLayoutRestores = [];
+    refreshNativeGroupOffsets(records, state.nativeGroupOffsetByNodeId);
     const total = Math.max(1, records.length * 6);
     let done = 0;
     let lastYieldAt = Date.now();
@@ -272,7 +273,11 @@ export function rotatedStretchSize(layout: any, parent: any): { width: number; h
 }
 
 export function absoluteStretchSize(layout: any, parentLayout: any, parent: any, constraints: any) {
-    if (layout.layoutPositioning !== "ABSOLUTE" || normalizeLayoutMode(layout.layoutMode) !== "NONE" || !parentLayout) return null;
+    // AUTO children in ordinary frames also obey constraints. Only children
+    // participating in auto-layout should be excluded from this correction.
+    const parentMode = normalizeLayoutMode(parent?.layoutMode || parentLayout?.layoutMode);
+    if ((layout.layoutPositioning !== "ABSOLUTE" && parentMode !== "NONE") ||
+        normalizeLayoutMode(layout.layoutMode) !== "NONE" || !parentLayout) return null;
     const dimension = (axis: string, key: string) => {
         if (constraints?.[axis] !== "STRETCH" || !Number.isFinite(layout[key]) || !Number.isFinite(parentLayout[key])) return null;
         return Math.max(0.01, layout[key] + parent[key] - parentLayout[key]);
@@ -309,6 +314,26 @@ function restoreAbsoluteStretchBox(record: { node: SceneNode; layout: any; isGro
     if (!size || (size.width === null && size.height === null)) return;
     safeResize(node, size.width ?? node.width, size.height ?? node.height);
     if (hasFiniteRelativeTransform(layout)) safeSet(node, "relativeTransform", layout.relativeTransform);
+}
+
+// Outer groups are finalized after their descendants. Grouping an outer shell
+// moves nested groups into the enclosing coordinate space, invalidating offsets
+// captured during inner-group creation. Snapshot once, before layout changes
+// can alter group bounds; reading live bounds during each restore would drift.
+export function refreshNativeGroupOffsets(
+    records: { node: any }[],
+    offsets: { [nodeId: string]: { x: number; y: number } }
+) {
+    const visited = new Set<string>();
+    for (const { node } of records) {
+        if (isRemovedNode(node)) continue;
+        const parent = node.parent;
+        if (!parent || parent.type !== "GROUP" || !offsets[parent.id] || visited.has(parent.id)) continue;
+        visited.add(parent.id);
+        if (Number.isFinite(parent.x) && Number.isFinite(parent.y)) {
+            offsets[parent.id] = { x: parent.x, y: parent.y };
+        }
+    }
 }
 
 function normalizeDeferredLayoutForNativeGroupParent(node: SceneNode, layout: any): any {

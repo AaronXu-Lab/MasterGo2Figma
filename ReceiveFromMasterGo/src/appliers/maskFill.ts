@@ -29,3 +29,18 @@ export function isDefaultMaskFill(paints: any): boolean {
     paint.gradientStops.every((stop: any) => isDefaultGray(stop.color)) &&
     paint.gradientStops.some((stop: any) => stop.color.a < 1);
 }
+
+// Older ZIPs lack isMaskVisible. A black alpha ramp followed by a separate
+// coloured paint layer is coverage, not a second visible black gradient.
+export function isGradientCoverageMask(fills: any, strokes: any, siblings: any[]): boolean {
+  const visible = (paints: any) => Array.isArray(paints) ? paints.filter((p: any) =>
+    p && p.visible !== false && (p.opacity === undefined || p.opacity > 0)) : [];
+  if (visible(strokes).length) return false;
+  const paints = visible(fills);
+  if (paints.length !== 1 || !String(paints[0].type).startsWith("GRADIENT_")) return false;
+  const stops = paints[0].gradientStops;
+  if (!Array.isArray(stops) || stops.length < 2 || !stops.some((s: any) => s.color?.a < 1)) return false;
+  if (!stops.every((s: any) => s.color?.r === 0 && s.color?.g === 0 && s.color?.b === 0)) return false;
+  return siblings.some(n => n.visible !== false && !n.isMask && visible(n.fills).some((p: any) =>
+    p.type === "SOLID" && (p.color?.r > 0 || p.color?.g > 0 || p.color?.b > 0)));
+}

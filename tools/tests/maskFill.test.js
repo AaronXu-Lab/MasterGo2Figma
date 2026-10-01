@@ -25,3 +25,12 @@ test('default gray alpha gradients never add a gray backdrop twin', () => {
   assert.equal(mod.exports.isDefaultMaskFill([{...gradient,gradientStops:[{color:{...gray,a:1}},{color:{r:1,g:0,b:0,a:0}}]}]),false);
   assert.equal(mod.exports.isDefaultMaskFill([{...gradient,gradientStops:[{color:{...gray,a:1}},{color:{...gray,a:1}}]}]),false);
 });
+
+test('legacy black alpha ramp with a coloured sibling is coverage', () => {
+  const fill = {type:'GRADIENT_LINEAR',gradientStops:[{color:{r:0,g:0,b:0,a:0}},{color:{r:0,g:0,b:0,a:1}}]};
+  const sibling = {visible:true,fills:[{type:'SOLID',color:{r:0.2,g:0.5,b:1}}]};
+  assert.equal(mod.exports.isGradientCoverageMask([fill],[],[sibling]),true);
+  assert.equal(mod.exports.isGradientCoverageMask([fill],[],[]),false);
+  assert.equal(mod.exports.isGradientCoverageMask([fill],[],[{...sibling,visible:false}]),false);
+  assert.equal(mod.exports.isGradientCoverageMask([fill],[{type:'SOLID'}],[sibling]),false);
+});

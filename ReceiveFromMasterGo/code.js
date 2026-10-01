@@ -216,6 +216,25 @@
     if (paint.type === "SOLID") return !!isDefaultGray(paint.color);
     return typeof paint.type === "string" && paint.type.startsWith("GRADIENT_") && Array.isArray(paint.gradientStops) && paint.gradientStops.length > 1 && paint.gradientStops.every((stop) => isDefaultGray(stop.color)) && paint.gradientStops.some((stop) => stop.color.a < 1);
   }
+  function isGradientCoverageMask(fills, strokes, siblings) {
+    const visible = (paints2) => Array.isArray(paints2) ? paints2.filter((p) => p && p.visible !== false && (p.opacity === void 0 || p.opacity > 0)) : [];
+    if (visible(strokes).length) return false;
+    const paints = visible(fills);
+    if (paints.length !== 1 || !String(paints[0].type).startsWith("GRADIENT_")) return false;
+    const stops = paints[0].gradientStops;
+    if (!Array.isArray(stops) || stops.length < 2 || !stops.some((s) => {
+      var _a;
+      return ((_a = s.color) == null ? void 0 : _a.a) < 1;
+    })) return false;
+    if (!stops.every((s) => {
+      var _a, _b, _c;
+      return ((_a = s.color) == null ? void 0 : _a.r) === 0 && ((_b = s.color) == null ? void 0 : _b.g) === 0 && ((_c = s.color) == null ? void 0 : _c.b) === 0;
+    })) return false;
+    return siblings.some((n) => n.visible !== false && !n.isMask && visible(n.fills).some((p) => {
+      var _a, _b, _c;
+      return p.type === "SOLID" && (((_a = p.color) == null ? void 0 : _a.r) > 0 || ((_b = p.color) == null ? void 0 : _b.g) > 0 || ((_c = p.color) == null ? void 0 : _c.b) > 0);
+    }));
+  }
 
   // ../shared/layerRulesConfig.ts
   var LAYER_RULES_SCHEMA = "mastergo2figma.layer-conversion-rules.v1";
@@ -501,6 +520,21 @@ ${style}`;
     return String(value || "").toLowerCase().split(/[\s_-]+/).filter(Boolean);
   }
 
+  // ../shared/textRangeUtils.ts
+  function normalizeCompleteTextRanges(characters, ranges) {
+    const codePoints = Array.from(characters);
+    if (codePoints.length === characters.length || !ranges.length) return ranges;
+    let end = 0;
+    for (const range of ranges) {
+      if (!range || !Number.isInteger(range.start) || !Number.isInteger(range.end) || range.start !== end || range.end <= range.start) return ranges;
+      end = range.end;
+    }
+    if (end !== codePoints.length) return ranges;
+    const offsets = [0];
+    for (const character of codePoints) offsets.push(offsets[offsets.length - 1] + character.length);
+    return ranges.map((range) => __spreadProps(__spreadValues({}, range), { start: offsets[range.start], end: offsets[range.end] }));
+  }
+
   // src/appliers/text.ts
   var MISSING_FONT_NAME_PREFIX_PATTERN = /^\[Font Missing\]\[([^\]]+)\]\[([^\]]+)\]\s*/;
   function applyTextProperties(node, data) {
@@ -566,6 +600,7 @@ ${style}`;
     return __async(this, null, function* () {
       var _a, _b;
       const charLength = node.characters.length;
+      segments = normalizeCompleteTextRanges(node.characters, segments);
       const resolvedByKey = {};
       for (const segment of segments) {
         if (!segment || !segment.fontName) continue;
@@ -882,11 +917,35 @@ ${style}`;
     if (value === "CIRCLE_FILLED") return "ROUND";
     return "NONE";
   }
-  function createConnectorRoutePoints(start, end, startEndpoint, endEndpoint, lineType) {
+  function createConnectorRoutePoints(start, end, startEndpoint, endEndpoint, lineType, bounds) {
     const startPoint = normalizeConnectorPoint(start);
     const endPoint = normalizeConnectorPoint(end);
     if (lineType !== "ELBOWED" || isSameConnectorAxis(startPoint, endPoint)) {
       return dedupeConnectorPoints([startPoint, endPoint]);
+    }
+    const sm = startEndpoint == null ? void 0 : startEndpoint.magnet;
+    const em = endEndpoint == null ? void 0 : endEndpoint.magnet;
+    if (bounds && sm === "BOTTOM" && endPoint.y < startPoint.y && em === "LEFT" && endPoint.x > startPoint.x && bounds.height > startPoint.y) {
+      const edge = startPoint.x + (Number(startEndpoint == null ? void 0 : startEndpoint.width) || 0) / 2;
+      const middleX = (edge + endPoint.x) / 2;
+      return dedupeConnectorPoints([
+        startPoint,
+        { x: startPoint.x, y: bounds.height },
+        { x: middleX, y: bounds.height },
+        { x: middleX, y: endPoint.y },
+        endPoint
+      ]);
+    }
+    if (bounds && sm === "RIGHT" && em === "TOP" && endPoint.y < startPoint.y && endPoint.x > startPoint.x && endPoint.y > 0) {
+      const edge = endPoint.x - (Number(endEndpoint == null ? void 0 : endEndpoint.width) || 0) / 2;
+      const middleX = (startPoint.x + edge) / 2;
+      return dedupeConnectorPoints([
+        startPoint,
+        { x: middleX, y: startPoint.y },
+        { x: middleX, y: 0 },
+        { x: endPoint.x, y: 0 },
+        endPoint
+      ]);
     }
     const horizontalFirst = shouldConnectorRouteStartHorizontal(startPoint, endPoint, startEndpoint, endEndpoint);
     const middlePoint = horizontalFirst ? { x: endPoint.x, y: startPoint.y } : { x: startPoint.x, y: endPoint.y };
@@ -994,7 +1053,8 @@ ${style}`;
       end,
       data.connectorStart,
       data.connectorEnd,
-      data.connectorLineType || "ELBOWED"
+      data.connectorLineType || "ELBOWED",
+      data.layout
     );
     const vertices = points.map((point, index) => {
       var _a, _b, _c;
@@ -1084,6 +1144,7 @@ ${style}`;
       if (state.deferredLayoutRestores.length === 0) return;
       const records = state.deferredLayoutRestores;
       state.deferredLayoutRestores = [];
+      refreshNativeGroupOffsets(records, state.nativeGroupOffsetByNodeId);
       const total = Math.max(1, records.length * 6);
       let done = 0;
       let lastYieldAt = Date.now();
@@ -1295,7 +1356,8 @@ ${style}`;
     return null;
   }
   function absoluteStretchSize(layout, parentLayout, parent, constraints) {
-    if (layout.layoutPositioning !== "ABSOLUTE" || normalizeLayoutMode(layout.layoutMode) !== "NONE" || !parentLayout) return null;
+    const parentMode = normalizeLayoutMode((parent == null ? void 0 : parent.layoutMode) || (parentLayout == null ? void 0 : parentLayout.layoutMode));
+    if (layout.layoutPositioning !== "ABSOLUTE" && parentMode !== "NONE" || normalizeLayoutMode(layout.layoutMode) !== "NONE" || !parentLayout) return null;
     const dimension = (axis, key) => {
       if ((constraints == null ? void 0 : constraints[axis]) !== "STRETCH" || !Number.isFinite(layout[key]) || !Number.isFinite(parentLayout[key])) return null;
       return Math.max(0.01, layout[key] + parent[key] - parentLayout[key]);
@@ -1331,6 +1393,18 @@ ${style}`;
     if (!size || size.width === null && size.height === null) return;
     safeResize(node, (_a = size.width) != null ? _a : node.width, (_b = size.height) != null ? _b : node.height);
     if (hasFiniteRelativeTransform(layout)) safeSet(node, "relativeTransform", layout.relativeTransform);
+  }
+  function refreshNativeGroupOffsets(records, offsets) {
+    const visited = /* @__PURE__ */ new Set();
+    for (const { node } of records) {
+      if (isRemovedNode(node)) continue;
+      const parent = node.parent;
+      if (!parent || parent.type !== "GROUP" || !offsets[parent.id] || visited.has(parent.id)) continue;
+      visited.add(parent.id);
+      if (Number.isFinite(parent.x) && Number.isFinite(parent.y)) {
+        offsets[parent.id] = { x: parent.x, y: parent.y };
+      }
+    }
   }
   function normalizeDeferredLayoutForNativeGroupParent(node, layout) {
     const parent = node.parent;
@@ -1421,6 +1495,21 @@ ${style}`;
       } catch (e) {
       }
     }
+  }
+
+  // src/appliers/connectorSvg.ts
+  function localConnectorSvg(data) {
+    var _a, _b, _c, _d;
+    const source = data == null ? void 0 : data.connectorSvg;
+    if ((data == null ? void 0 : data.sourceType) !== "CONNECTOR" || typeof (source == null ? void 0 : source.markup) !== "string" || ((_b = (_a = data.blend) == null ? void 0 : _a.opacity) != null ? _b : 1) !== 1 || ((_d = (_c = data.blend) == null ? void 0 : _c.effects) == null ? void 0 : _d.length)) return null;
+    const outer = source.markup.match(/^\s*<svg\b([^>]*)>([\s\S]*)<\/svg>\s*$/i);
+    if (!outer || /<(?:image|filter|mask|clipPath|text)\b/i.test(source.markup)) return null;
+    const view = outer[1].match(/\bviewBox\s*=\s*["']([^"']+)["']/i);
+    const box = view == null ? void 0 : view[1].trim().split(/[\s,]+/).map(Number);
+    const { width, height } = data.layout || {};
+    const offset = source.offset;
+    if (!box || box.length !== 4 || !box.every(Number.isFinite) || box[0] !== 0 || box[1] !== 0 || ![width, height, offset == null ? void 0 : offset.x, offset == null ? void 0 : offset.y, source.width, source.height].every(Number.isFinite) || width <= 0 || height <= 0 || Math.abs(box[2] - source.width) >= 1 || Math.abs(box[3] - source.height) >= 1) return null;
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><g transform="translate(${offset.x},${offset.y})">${outer[2]}</g></svg>`;
   }
 
   // src/appliers/ellipseArcSvg.ts
@@ -1849,10 +1938,15 @@ ${style}`;
             node = figma.createSlice();
             break;
           case "CONNECTOR":
+            const connectorSvg = localConnectorSvg(data);
+            if (connectorSvg) {
+              node = figma.createNodeFromSvg(connectorSvg);
+              break;
+            }
             const connectorVector = figma.createVector();
             node = connectorVector;
             if (!data.connectorFallbackPolyline) data.connectorFallbackPolyline = true;
-            if (!hasUsableVectorNetwork(data.vectorNetwork)) {
+            if (!data.connectorRouteExplicit || !hasUsableVectorNetwork(data.vectorNetwork)) {
               data.vectorNetwork = createConnectorVectorNetworkFromData(data, null);
             }
             if (data.vectorNetwork) yield applyVectorNetwork(connectorVector, data.vectorNetwork, data);
@@ -1884,6 +1978,36 @@ ${style}`;
       if (node) markShellPlaceholderNode(node, data);
       return node;
     });
+  }
+
+  // ../shared/layoutGridUtils.ts
+  function normalizeLayoutGrids(grids) {
+    var _a, _b, _c;
+    if (!Array.isArray(grids)) return [];
+    const result = [];
+    for (const grid of grids) {
+      if (!grid || typeof grid !== "object") continue;
+      const pattern = grid.pattern || grid.gridType;
+      if (["GRID", "ROWS", "COLUMNS"].indexOf(pattern) < 0) continue;
+      const common = {
+        pattern,
+        visible: (_b = (_a = grid.visible) != null ? _a : grid.isVisible) != null ? _b : true,
+        color: grid.color ? { r: grid.color.r, g: grid.color.g, b: grid.color.b, a: grid.color.a } : { r: 1, g: 0, b: 0, a: 0.1 }
+      };
+      const sectionSize = grid.sectionSize == null ? void 0 : grid.sectionSize;
+      if (pattern === "GRID") {
+        result.push(__spreadProps(__spreadValues({}, common), { sectionSize: sectionSize != null ? sectionSize : 10 }));
+        continue;
+      }
+      const alignment = { LEFT: "MIN", RIGHT: "MAX" }[grid.alignment] || grid.alignment || "STRETCH";
+      result.push(__spreadValues(__spreadProps(__spreadValues({}, common), {
+        alignment,
+        count: grid.count,
+        gutterSize: grid.gutterSize,
+        offset: (_c = grid.offset) != null ? _c : 0
+      }), sectionSize === void 0 || alignment === "STRETCH" ? {} : { sectionSize }));
+    }
+    return result;
   }
 
   // ../shared/matrixUtils.ts
@@ -2374,6 +2498,7 @@ ${style}`;
         }
         deferLayoutRestore(node, layout, isGroup);
       }
+      if (data.layoutGrids !== void 0 && "layoutGrids" in node) safeSet(node, "layoutGrids", normalizeLayoutGrids(data.layoutGrids));
       if (data.clipsContent !== void 0) safeSet(node, "clipsContent", data.clipsContent);
     });
   }
@@ -2383,7 +2508,10 @@ ${style}`;
     return __async(this, null, function* () {
       var _a, _b;
       if (!node || !data) return;
-      const arcSvgWrapper = node.type === "FRAME" && localEllipseArcSvg(data);
+      if (data.sourceType === "CONNECTOR" && data.layout) {
+        data = __spreadProps(__spreadValues({}, data), { layout: __spreadProps(__spreadValues({}, data.layout), { layoutPositioning: "ABSOLUTE" }) });
+      }
+      const arcSvgWrapper = node.type === "FRAME" && (localEllipseArcSvg(data) || localConnectorSvg(data));
       yield applyUniversalProperties(node, arcSvgWrapper ? __spreadProps(__spreadValues({}, data), { geometry: { fills: [], strokes: [], strokeWeight: 0 }, clipsContent: false }) : data);
       if (arcSvgWrapper) node.clipsContent = false;
       const fixedLines = node.type === "FRAME" ? getFixedMixedTextLines(data) : null;
@@ -3705,10 +3833,19 @@ ${style}`;
   function isConnectorRestoreData(data) {
     return !!data && (data.sourceType === "CONNECTOR" || data.type === "CONNECTOR" || data.restoreType === "CONNECTOR");
   }
-  function prepareConnectorPolylineFallbackProps(data, parent) {
+  function prepareConnectorPolylineFallbackProps(data, parent, layers) {
+    var _a, _b;
     if (!isConnectorRestoreData(data)) return data;
     const props = __spreadValues({}, data);
     props.connectorFallbackPolyline = true;
+    for (const key of ["connectorStart", "connectorEnd"]) {
+      const endpoint = props[key];
+      const layout = (_b = (_a = layers[endpoint == null ? void 0 : endpoint.endpointNodeId]) == null ? void 0 : _a.props) == null ? void 0 : _b.layout;
+      const transform = layout == null ? void 0 : layout.relativeTransform;
+      if (layout && (!transform || transform[0][0] === 1 && transform[0][1] === 0 && transform[1][0] === 0 && transform[1][1] === 1)) {
+        props[key] = __spreadProps(__spreadValues({}, endpoint), { width: layout.width });
+      }
+    }
     if (!hasUsableVectorNetwork(props.vectorNetwork)) {
       props.vectorNetwork = createConnectorVectorNetworkFromData(props, parent);
     }
@@ -3782,7 +3919,7 @@ ${style}`;
       if (shouldRestoreBooleanVectorAsFrame(nodeProps, layerRecord)) {
         nodeProps = createBooleanFrameFallbackProps(nodeProps);
       }
-      nodeProps = prepareConnectorPolylineFallbackProps(nodeProps, parent);
+      nodeProps = prepareConnectorPolylineFallbackProps(nodeProps, parent, layers);
       if (shouldPreserveVectorLayoutBoxForAutoLayout(nodeProps, parent)) {
         nodeProps = markVectorAutoLayoutBox(nodeProps);
       }
@@ -3993,6 +4130,11 @@ ${style}`;
       if (isDefaultMaskFill(nodeAny.fills) && !hasVisiblePaint(nodeAny.strokes)) return;
       const parent = node.parent;
       if (!parent || !("insertChild" in parent)) return;
+      if (!session.maskFillExplicitNodeIds[node.id] && isGradientCoverageMask(
+        nodeAny.fills,
+        nodeAny.strokes,
+        [...parent.children].slice(parent.children.indexOf(node) + 1)
+      )) return;
       if (!session.maskFillExplicitNodeIds[node.id] && isBackdropCoverageMask(nodeAny.fills, nodeAny.strokes, parent.effects)) return;
       try {
         const twin = node.clone();
@@ -4067,7 +4209,7 @@ ${style}`;
         if (node.type === "TEXT") {
           const textNode = node;
           let charsOverridden = false;
-          if (typeof props.characters === "string" && props.characters.length > 0) {
+          if (typeof props.characters === "string") {
             try {
               if (textNode.characters !== props.characters && textNode.fontName !== figma.mixed) {
                 yield loadFontCached(textNode.fontName);

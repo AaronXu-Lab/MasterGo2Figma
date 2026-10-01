@@ -2,7 +2,7 @@ import { normalizeMasterGoSizeLimit } from "../../shared/layoutLimits";
 import { restoreLegacyWrapLayout } from "./legacyWrapLayout";
 import { ImportLayerRecord, ImportManifest, ImportPageIndex, MissingFontTextRestoreResult } from "../../shared/types";
 import { state } from "./state";
-import { isBackdropCoverageMask, isDefaultMaskFill } from "./appliers/maskFill";
+import { isBackdropCoverageMask, isDefaultMaskFill, isGradientCoverageMask } from "./appliers/maskFill";
 import {
   ensureLayerRulesLoaded, hasValidLayerRules, getLayerRuleStatus
 } from "./layerRules";
@@ -1029,11 +1029,22 @@ function isConnectorRestoreData(data: any): boolean {
   return !!data && (data.sourceType === "CONNECTOR" || data.type === "CONNECTOR" || data.restoreType === "CONNECTOR");
 }
 
-function prepareConnectorPolylineFallbackProps(data: any, parent: PageNode | SceneNode): any {
+function prepareConnectorPolylineFallbackProps(data: any, parent: PageNode | SceneNode, layers: { [id: string]: ImportLayerRecord }): any {
   if (!isConnectorRestoreData(data)) return data;
 
   const props = { ...data };
   props.connectorFallbackPolyline = true;
+  // Route through the gap between attached nodes, not the midpoint between
+  // ports (which can run through the wider source or destination node).
+  for (const key of ["connectorStart", "connectorEnd"]) {
+    const endpoint = props[key];
+    const layout = layers[endpoint?.endpointNodeId]?.props?.layout;
+    const transform = layout?.relativeTransform;
+    if (layout && (!transform || (transform[0][0] === 1 && transform[0][1] === 0 &&
+        transform[1][0] === 0 && transform[1][1] === 1))) {
+      props[key] = { ...endpoint, width: layout.width };
+    }
+  }
   if (!hasUsableVectorNetwork(props.vectorNetwork)) {
     props.vectorNetwork = createConnectorVectorNetworkFromData(props, parent);
   }
@@ -1125,7 +1136,7 @@ async function restoreImportedNode(
   if (shouldRestoreBooleanVectorAsFrame(nodeProps, layerRecord)) {
     nodeProps = createBooleanFrameFallbackProps(nodeProps);
   }
-  nodeProps = prepareConnectorPolylineFallbackProps(nodeProps, parent);
+  nodeProps = prepareConnectorPolylineFallbackProps(nodeProps, parent, layers);
   if (shouldPreserveVectorLayoutBoxForAutoLayout(nodeProps, parent)) {
     nodeProps = markVectorAutoLayoutBox(nodeProps);
   }
@@ -1401,6 +1412,8 @@ function paintFilledMaskTwins(session: ImportSession): number {
     if (isDefaultMaskFill(nodeAny.fills) && !hasVisiblePaint(nodeAny.strokes)) return;
     const parent = node.parent;
     if (!parent || !("insertChild" in parent)) return;
+    if (!session.maskFillExplicitNodeIds[node.id] && isGradientCoverageMask(nodeAny.fills, nodeAny.strokes,
+        [...parent.children].slice(parent.children.indexOf(node) + 1))) return;
     if (!session.maskFillExplicitNodeIds[node.id] &&
         isBackdropCoverageMask(nodeAny.fills, nodeAny.strokes, (parent as any).effects)) return;
     try {
@@ -1482,7 +1495,8 @@ async function applyInstanceChildOverrides(
     if (node.type === "TEXT") {
       const textNode = node as TextNode;
       let charsOverridden = false;
-      if (typeof props.characters === "string" && props.characters.length > 0) {
+      // An explicit empty override clears the template's placeholder text.
+      if (typeof props.characters === "string") {
         try {
           if (textNode.characters !== props.characters && textNode.fontName !== figma.mixed) {
             await loadFontCached(textNode.fontName as FontName);

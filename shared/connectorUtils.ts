@@ -2,6 +2,7 @@ export type ConnectorMagnet = "TOP" | "BOTTOM" | "LEFT" | "RIGHT";
 
 export type ConnectorEndpoint = {
     magnet: ConnectorMagnet;
+    width?: number;
 };
 
 export type Point2D = {
@@ -130,12 +131,33 @@ export function createConnectorRoutePoints(
     end: any,
     startEndpoint: ConnectorEndpoint | null | undefined,
     endEndpoint: ConnectorEndpoint | null | undefined,
-    lineType: string
+    lineType: string,
+    bounds?: { width: number; height: number }
 ): Point2D[] {
     const startPoint = normalizeConnectorPoint(start);
     const endPoint = normalizeConnectorPoint(end);
     if (lineType !== "ELBOWED" || isSameConnectorAxis(startPoint, endPoint)) {
         return dedupeConnectorPoints([startPoint, endPoint]);
+    }
+
+    // When a port faces away from its destination, the native bounding box
+    // includes the turnaround. Preserve that extremum instead of reversing
+    // direction immediately at the port. No arbitrary clearance is added.
+    const sm = startEndpoint?.magnet;
+    const em = endEndpoint?.magnet;
+    if (bounds && sm === "BOTTOM" && endPoint.y < startPoint.y &&
+        em === "LEFT" && endPoint.x > startPoint.x && bounds.height > startPoint.y) {
+        const edge = startPoint.x + (Number(startEndpoint?.width) || 0) / 2;
+        const middleX = (edge + endPoint.x) / 2;
+        return dedupeConnectorPoints([startPoint, {x:startPoint.x,y:bounds.height},
+            {x:middleX,y:bounds.height}, {x:middleX,y:endPoint.y}, endPoint]);
+    }
+    if (bounds && sm === "RIGHT" && em === "TOP" && endPoint.y < startPoint.y &&
+        endPoint.x > startPoint.x && endPoint.y > 0) {
+        const edge = endPoint.x - (Number(endEndpoint?.width) || 0) / 2;
+        const middleX = (startPoint.x + edge) / 2;
+        return dedupeConnectorPoints([startPoint, {x:middleX,y:startPoint.y},
+            {x:middleX,y:0}, {x:endPoint.x,y:0}, endPoint]);
     }
 
     const horizontalFirst = shouldConnectorRouteStartHorizontal(startPoint, endPoint, startEndpoint, endEndpoint);

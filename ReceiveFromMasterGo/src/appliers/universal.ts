@@ -1,3 +1,4 @@
+import { normalizeLayoutGrids } from "../../../shared/layoutGridUtils";
 import { MissingImageAssetDetail, state } from "../state";
 import { safeSet, safeResize } from "../../../shared/utils";
 import { cloneTransform } from "../../../shared/matrixUtils";
@@ -629,5 +630,6 @@ export async function applyUniversalProperties(node: any, data: any) {
         deferLayoutRestore(node, layout, isGroup);
     }
 
+    if (data.layoutGrids !== undefined && "layoutGrids" in node) safeSet(node, "layoutGrids", normalizeLayoutGrids(data.layoutGrids));
     if (data.clipsContent !== undefined) safeSet(node, "clipsContent", data.clipsContent);
 }
