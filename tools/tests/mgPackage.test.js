@@ -401,6 +401,25 @@ test("font overrides with empty family recover the PostScript name", () => {
   assert.equal(fonts['1:2'].fontSize,36);
 });
 
+test("underscore font names retain size, tracking and trailing style fields", () => {
+  // Minimal native font entry: the glyph run may omit its own font list,
+  // so dropping this entry sends the label to the box-height size fallback.
+  const bytes = Buffer.concat([
+    Buffer.from('\x019:1\0\x05\x03\x03HarmonyOS_Sans_SC\0'),
+    Buffer.from([4, 0x82, 0, 0, 0x40, 8, 0x7e, 0, 0, 0, 0x0b, 1]),
+    Buffer.from('\x0cHarmonyOS_Sans_SC\0\x0e\0\x12Regular\0\0')
+  ]);
+  const entry = __test.scanFontStyles(bytes, bytes.toString('latin1'))['9:1'];
+  assert.equal(entry.family, 'HarmonyOS_Sans_SC');
+  assert.equal(entry.psName, 'HarmonyOS_Sans_SC');
+  assert.equal(entry.fontSize, 10);
+  assert.equal(entry.letterSpacing, 0.5);
+  assert.equal(entry.letterSpacingPx, true);
+  assert.equal(entry.styleName, 'Regular');
+  const malformed = Buffer.from('\x019:2\0\x05\x03\x03Invalid/Family\0\0');
+  assert.equal(__test.scanFontStyles(malformed, malformed.toString('latin1'))['9:2'], undefined);
+});
+
 test("mixed font runs retain order and style refs across explicit run flags", () => {
   const bytes=Buffer.from('\x06\x02\x01a0\0\x02Body\0\x031:1\0\0\x01a1\0\x02Cost\0\x031:2\0\x04\x01\0\0');
   const parsed=__test.parseFontRuns(bytes,0,bytes.length);
@@ -485,6 +504,21 @@ test('font entry percent flag overrides pixel flag and does not scale percentage
   assert.deepEqual(__test.lineHeightFromStyleEntry({...entry,lineHeightPercent:false}, 0.5, false), {value:50,unit:'PIXELS'});
   assert.deepEqual(__test.lineHeightFromStyleEntry({lineHeight:22,lineHeightPx:false}, 1, true), {unit:'AUTO'});
   assert.deepEqual(__test.lineHeightFromStyleEntry({lineHeight:-1}, 1, false), {unit:'AUTO'});
+});
+
+test('computed automatic line height may cache a percentage without explicit sizing', () => {
+  const bytes = Buffer.concat([
+    Buffer.from('\x019:4\0\x05\x03\x03Microsoft YaHei\0'),
+    Buffer.from([4, 0x83, 0, 0, 0x40, 5, 0x86, 0, 0, 4, 7, 1]),
+    Buffer.from('\x0cMicrosoftYaHei-Regular\0\x0fEMPTYHASHFFFFFFF\0\x12Regular\0\0')
+  ]);
+  const entry = __test.scanFontStyles(bytes, bytes.toString('latin1'))['9:4'];
+  assert.equal(entry.lineHeight, 130);
+  assert.equal(entry.hasFontFileHashField, true);
+  assert.equal(entry.lineHeightPercent, true);
+  assert.deepEqual(__test.lineHeightFromStyleEntry(entry, 0.5, true), {unit:'AUTO'});
+  // An explicit percentage still wins over the pixel-unit spelling.
+  assert.deepEqual(__test.lineHeightFromStyleEntry({...entry,lineHeightPx:true}, 0.5, true), {unit:'PERCENT',value:130});
 });
 
 test('painted masks accept the paired newer flags without enabling shape-only masks', () => {

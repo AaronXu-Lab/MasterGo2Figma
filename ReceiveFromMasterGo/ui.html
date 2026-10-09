@@ -2363,7 +2363,10 @@
         // "ReeJi-BigRuixain-BlackGBV1.0") — rejecting them dropped 22 of the
         // 临时测试 fixture's 27 text-style entries, and with them every
         // fontSize/lineHeight/letterSpacing on those texts.
-        if (family && !/^[A-Za-z\u3400-\u9fff][A-Za-z0-9\u3400-\u9fff .+-]{0,60}$/.test(family)) continue;
+        // Legacy PostScript-family spellings can contain underscores
+        // (HarmonyOS_Sans_SC). Preserve the name and all following metrics;
+        // fontLoader resolves separator aliases against installed fonts.
+        if (family && !/^[A-Za-z\u3400-\u9fff][A-Za-z0-9\u3400-\u9fff .+_-]{0,60}$/.test(family)) continue;
         entry.psName = family; // legacy field name: full-export entries put the PostScript name here
         entry.family = family;
         p = q + 1;
@@ -2412,7 +2415,7 @@
               p = c.end + 1;
               continue;
             }
-            if (!/^[A-Za-z\u3400-\u9fff][A-Za-z0-9\u3400-\u9fff .+-]{0,60}$/.test(c.text)) break;
+            if (!/^[A-Za-z\u3400-\u9fff][A-Za-z0-9\u3400-\u9fff .+_-]{0,60}$/.test(c.text)) break;
             if (tag === 0x0c) entry.psName = c.text;
             else entry.styleName = c.text;
             p = c.end + 1;
@@ -2452,8 +2455,11 @@
 
     function mgLineHeightFromStyleEntry(entry, scale, computedEntry) {
       if (!entry || !(entry.lineHeight > 0)) return { unit: "AUTO" };
-      if (entry.lineHeightPercent) return { value: entry.lineHeight, unit: "PERCENT" };
+      // Computed entries can cache an automatic line box as a percentage
+      // (130/149 in 1009). Field 06 still distinguishes explicit from AUTO;
+      // field 07 selects PERCENT only after that presence check.
       if (computedEntry && !entry.lineHeightPx) return { unit: "AUTO" };
+      if (entry.lineHeightPercent) return { value: entry.lineHeight, unit: "PERCENT" };
       return { value: entry.lineHeight * (scale || 1), unit: "PIXELS" };
     }
 

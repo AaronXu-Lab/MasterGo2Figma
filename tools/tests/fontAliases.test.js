@@ -9,6 +9,16 @@ const moduleObject = { exports: {} };
 new Function('module', 'exports', output.outputFiles[0].text)(moduleObject, moduleObject.exports);
 const { state, rebuildAvailableFontIndex, resolveAvailableFontName } = moduleObject.exports;
 
+test('native legacy font spellings resolve their installed display families', () => {
+  const names = ['HarmonyOS Sans SC', 'Helvetica Neue', 'PingFang SC'];
+  state.documentFonts = names.map(family => ({fontName:{family,style:'Regular'}}));
+  rebuildAvailableFontIndex();
+  for (const [requested,family] of [['HarmonyOS_Sans_SC',names[0]],['HelveticaNeue',names[1]],['PingFangSC',names[2]]]) {
+    assert.deepEqual(resolveAvailableFontName({family:requested,style:'Regular'}), {family,style:'Regular'});
+  }
+  assert.equal(resolveAvailableFontName({family:'HarmonyOS_Sans_SC',style:'Bold'}), null);
+});
+
 test('localized PingFang names resolve the same installed face without crossing regional families', () => {
   const families = [['苹方-简', 'PingFang SC'], ['苹方-繁', 'PingFang TC'], ['苹方-港', 'PingFang HK'], ['苹方-澳', 'PingFang MO']];
   const styles = [['常规体', 'Regular'], ['中黑体', 'Medium'], ['中粗体', 'Semibold'], ['细体', 'Light'], ['纤细体', 'Thin'], ['极细体', 'Ultralight']];

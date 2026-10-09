@@ -895,6 +895,21 @@ container layout (clipsContent / layoutMode / spacing / paddings / align / sizin
 
 ## Native TEXT — CRACKED ✓ (font runs + style table, 2026-07-10)
 
+### 2026-10-09 legacy font names and automatic percentage caches
+
+Font-table fields `03` and `0c` accept underscores within the same bounded
+name grammar. `HarmonyOS_Sans_SC` is a real legacy spelling, not a malformed
+record. Rejecting it discarded size/tracking along with the family; the 1009
+radar labels guessed 16 px instead of their native 10 px. Preserve the spelling;
+the receiver's installed-font matching already ignores spaces/underscores.
+
+For **computed** entries (`0f` present), check field `06` before applying field
+`07`'s percentage unit. The 1009 cross-table has 25 AUTO texts with `06` absent,
+`07=1`, and cached line-height values 130/149. All 21 explicit PIXELS texts have
+`06=1`; another 431 AUTO texts omit both flags. The 09008 explicit percentages
+carry both `06=1,07=1` and remain PERCENT. Thus `07` selects the unit of an
+explicit height; it does not by itself turn a computed AUTO cache into one.
+
 ### Font-run list (`1c 08` object, `mgParseFontRuns`)
 ```
 [01 <alignH> 02 <alignV> 03 <autoResize>]   one-byte values < 0x10
@@ -1238,8 +1253,8 @@ records do not. Examples: `3:70223` = size 24, lineHeight 100, `06 01 07 01`;
 `07 01`. Previously 07 was ignored. `mgLineHeightFromStyleEntry` is shared by
 node properties, mixed runs and emitted text styles so a later style binding
 cannot restore the wrong unit. Absent/negative height remains AUTO; computed
-entries without the explicit pixel flag retain the existing AUTO rule when
-not marked PERCENT.
+entries without field `06` retain AUTO even when the cached value is marked
+PERCENT (1009 refinement above).
 
 09008 deep diff 518 → 367, font differences 40 → 20; no new diff rows.
 The available 汇总 pair retains all previous diff rows exactly (deep 1323).
