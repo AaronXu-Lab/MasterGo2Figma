@@ -2209,3 +2209,94 @@ bounds，真实重导入两路径均回到(1387,424)。
 都没有。09008既有百分比证据同时包含06=1和07=1。因此先判computed的
 显式高度标记，再判单位，保留既有百分比行为。不能仅因07出现就认定作者
 指定了百分比行高。未修改发送端算法。
+
+
+## 2026-10-12 · 测试文件：容器圆角数组按顺时针排列
+
+用户将 50 页文件处理为单页后，从同一 MasterGo 快照原生保存 MG、全页导出 ZIP，
+并逐层采集 7 张 PNG。29 层完整，初始具名比较全部为零，deep diff 却有 12 条
+底部圆角差异（6 个按钮）。原生 PNG 与 ZIP 均为左右外侧圆角，MG 为对角圆角。
+容器 `1c 07` 内 `04 04` 的 `[6,0,0,6]` 应对应 TL6/TR0/BR0/BL6，
+顺序是 TL/TR/BR/BL。只修改已取证的容器映射，矩形独立编码不类推修改。
+
+新增原生 zero-compressed 字节、四角不同值、显式零、缺字段与模板继承缩放测试。
+当前 deep183→171；余下为默认/缺省字段（min/max四项116、wrap17、spacing17、
+空layoutGrids17）和字体字重400/0四项。0806 同轮比较 deep1278→1274，
+仅消除4条已有圆角差异，无新增差异；既有其他残差未宣称通过。
+三页初始画布及图片坐标/尺寸/旋转/顺序已验证；最终新版真实导入结果见一致性状态。
+
+## Alphanumeric document namespaces (2026-10-12, 中转2....)
+
+Native colon IDs have nonempty ASCII alphanumeric tokens on BOTH sides of `:`;
+the document namespace is not limited to digits. The paired single-page export
+uses `po33:71244` for canvas roots and `ct32:20617` for library paint references,
+with slash-composed instance descendants following the same segment grammar.
+Keep colon-only auxiliary tokens as a separate accepted form. Node/header, paint,
+effect, font/style, run-reference, variable and residue scanners must share this
+namespace allowance; otherwise valid page-owned roots are invisible. Raw root
+header: `01 po33:71244 00 03 a0 00 04 <name> … 1b 0:2 00 1c 07 …`.
+The change preserves record framing and printable sort-code constraints. Current
+paired comparison: 2374/2374 expected records, no missing/type/parent/index/child
+order mismatches; 95 dependency extras, 13795 deep prop differences remain under
+investigation. Actual Figma reimport and native-image comparison remain pending.
+
+### Native text mode 11 and snapshot truncation (2026-10-12)
+
+The TEXT object's leading `03 0b` maps to `TRUNCATE_AND_AUTO_HEIGHT`: all 12
+canvas records with that byte in 中转2.... match the paired ZIP mode. The native
+decoder previously interpreted it as WIDTH_AND_HEIGHT; the common text applier
+also passed the unsupported MasterGo enum directly into Figma. Both paths now
+retain the full editable string in the exported fixed box with ENDING truncation,
+like mode 3/TRUNCATE. The v2 package does not carry the source automatic-height
+line limit, so this is a snapshot replay, not dynamic line-limit equivalence.
+Stable source PNGs show these table fields remain one line rather than expanding
+the entire stored poetry/description. Automated decoding and API-rejection tests
+cover the path; final actual reimport remains pending.
+
+### 1012 final local and canvas verification
+
+Both receiver builds and 158 Node tests pass; current stable pair has 0 missing,
+0 type/parent/index/child-order mismatches, 95 required temporary library records,
+and 13783 deep-prop differences (default min/max/wrap/grid fields dominate).
+The actual MG and ZIP imports each retain 13 canvas roots / 2374 layers after
+library cleanup. All 13 native PNGs are placed in the image page. Source auto-layout
+reflow during selection changed five root heights; separately saved stable assets
+and source AX confirm those sizes, and the originals remain preserved.
+The 12 automatic-height truncating texts now retain their exported boxes/ellipsis
+in real reimports; screenshots show the long sidebar descriptions no longer spill.
+Missing Alibaba PuHuiTi 2.0 Regular/Bold remains (plugin counts 504/514). A distinct
+non-font residual is the 试听数 card: native hue is pink, both imported paints are
+blue. SendToFigma image truth enrichment excludes containers/multiple fills, and
+this CROP paint lacks a ZIP transform plus carries unsupported hue. Export-side
+expansion is a candidate pending user authorization, not implemented. The native
+MG also retains crop data whereas ZIP omits it. Do not claim all deep diff is zero
+or invoke the only-missing-font early completion branch. Final visual acceptance
+and export-side decision remain with the user. Private artifacts live outside
+the repository in Downloads/测试集 1012 2; final Figma file 3wT3bian5YLQxyiuIDRTpn.
+
+### 1012 native export verification — SVG/rectangle assumptions corrected
+
+The user explicitly requested automated native export verification. Actual
+MasterGo exports disproved the first SVG hue-bake assumption: embedded image
+pixels remained blue. A fresh rectangle also lost private CROP state and
+rendered only one nontransparent pixel. These first two exports are diagnostic
+failures, not passing results.
+
+The final implementation clones the original node to preserve private crop
+state, isolates the target image paint, removes cloned descendants/strokes/
+effects, and exports native PNG when hue is nonzero. For the sole visible paint
+the fill array stays untouched; this is necessary to retain crop. Only the paint
+is rasterized; the source node's text and children stay editable. The temporary
+clone is removed in finally. Crop-only recovery retains the SVG path.
+
+166 tests and both builds pass. The real final 14-34-34 ZIP has 2374 records /
+13 roots / 4 assets; compared with the old 13-49-01 ZIP only po33:72198 changed.
+The derived PNG is pink, 272×130, with identity imageTransform and no double
+filters. Source card PNG after export exactly matches the original SHA256, and
+its geometry remains x2412/y-60141/272×130. MasterGo safely exited.
+
+Real Figma import into 3wT3bian5YLQxyiuIDRTpn: final page 3:12509, card 3:14942
+is FRAME with 2 direct children and 9 editable TEXT nodes; pink hue is restored.
+The accepted missing-font differences remain (514 reported; card auto-layout
+height 118 vs source 130), so this is not a full pixel-equality claim. Original
+MG, old ZIP and image baselines remain. Awaiting user's new-card confirmation.

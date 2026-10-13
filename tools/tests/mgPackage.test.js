@@ -789,6 +789,70 @@ function nativeBoxRecord(id, scalar, container) {
   ]);
 }
 
+test('alphanumeric document namespaces preserve native roots, children and paint references', () => {
+  const { convertMgPackageToV2Entries } = require('../../ReceiveFromMasterGo/src/ui/mgPackage.js');
+  const document = Buffer.concat([
+    Buffer.from('\x010:2\0\x021\0\x03a0\0'),
+    nativeBoxRecord('po33:71244', Buffer.from('\x1b0:2\0'), [3, 0]),
+    Buffer.from('\x01po33:71245\0\x02po33:71244\0\x03a0\0\x04Child\0\x1b0:2\0\x1c\x07\x03\0\0\0')
+  ]);
+  const entries = convertMgPackageToV2Entries({ document }, 'namespace.mg');
+  const records = Object.entries(entries)
+    .filter(([name]) => name.includes('/layers/'))
+    .flatMap(([, data]) => JSON.parse(Buffer.from(data).toString()).records);
+  assert.equal(records.length, 2);
+  assert.equal(records[0].id, 'po33:71244');
+  assert.equal(records[1].parentId, 'po33:71244');
+  assert.deepEqual(records[0].childIds, ['po33:71245']);
+  const runBytes = Buffer.from('\x09\x01\x02\x03\x03ct32:20617\0\0');
+  assert.deepEqual(__test.parseTextRuns(runBytes, 0, runBytes.length, 3), [
+    { start: 0, end: 3, paintRef: 'ct32:20617' }
+  ]);
+  const nestedId = 'po33:1/ct32:2/Ab9:3';
+  assert.ok(__test.decodeNativeNodes(nativeBoxRecord(nestedId, [], [3, 0])).nodes[nestedId]);
+});
+
+test('native text mode 11 preserves automatic-height truncation', () => {
+  const bytes = Buffer.from('\x01po33:71521\0\x03a0\0\x04Long text\0\x1c\x08\x02\x01\x03\x0b\0');
+  const { nodes } = __test.decodeNativeNodes(bytes);
+  assert.equal(nodes['po33:71521'].textAutoResize, 'TRUNCATE_AND_AUTO_HEIGHT');
+  assert.equal(__test.nativeProps(nodes['po33:71521'], nodes, {}, {}, {}, {}, {}).textAutoResize,
+    'TRUNCATE_AND_AUTO_HEIGHT');
+});
+
+test('native container corner bytes use clockwise order, including explicit zero', () => {
+  // 1012 native Button field 04: [6,0,0,6], confirmed by native PNG and ZIP.
+  const cases = [
+    [[0x81, 0, 0, 0x80, 0, 0, 0x81, 0, 0, 0x80], [6, 0, 6, 0]],
+    [[0, 0x81, 0, 0, 0x80, 0x81, 0, 0, 0x80, 0], [0, 6, 0, 6]],
+    [[1, 2, 3, 4].flatMap(twist), [1, 2, 4, 3]],
+    [[0, 0, 0, 0], [0, 0, 0, 0]]
+  ];
+  for (const [raw, expected] of cases) {
+    const { nodes } = __test.decodeNativeNodes(nativeBoxRecord('9:1', [], [3, 0, 4, 4, ...raw]));
+    const node = nodes['9:1'];
+    const props = __test.nativeProps(node, nodes, {}, {}, {}, {}, {});
+    const c = props.corner;
+    assert.deepEqual([c.topLeftRadius, c.topRightRadius, c.bottomLeftRadius, c.bottomRightRadius], expected);
+    assert.equal(c.cornerRadius, expected.every(v => v === expected[0]) ? expected[0] : -1);
+  }
+});
+
+test('inherited container corners scale once and missing corners remain zero', () => {
+  const { nodes } = __test.decodeNativeNodes(Buffer.concat([
+    nativeBoxRecord('9:1', [], [3, 0, 4, 4, ...[2, 4, 6, 8].flatMap(twist)]),
+    nativeBoxRecord('9:2', [], [3, 0]),
+    nativeBoxRecord('9:3', [], [3, 0])
+  ]));
+  nodes['9:2'].templateRef = '9:1';
+  __test.inheritFromTemplate(nodes);
+  nodes['9:2'].effScale = 0.5;
+  const c = __test.nativeProps(nodes['9:2'], nodes, {}, {}, {}, {}, {}).corner;
+  assert.deepEqual([c.topLeftRadius, c.topRightRadius, c.bottomLeftRadius, c.bottomRightRadius], [1, 2, 4, 3]);
+  const absent = __test.nativeProps(nodes['9:3'], nodes, {}, {}, {}, {}, {}).corner;
+  assert.deepEqual([absent.topLeftRadius, absent.topRightRadius, absent.bottomLeftRadius, absent.bottomRightRadius], [0, 0, 0, 0]);
+});
+
 test('concrete native containers default each omitted axis to one and preserve explicit zero', () => {
   for (const container of [[3, 0], [5, 1], [3, 0, 7, 4, 1, 0], [6, 1, 0x17, 2]]) {
     for (const scalar of [[], [0x0e, 0], [0x0f, 0], [0x0e, 0, 0x0f, 0]]) {

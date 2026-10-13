@@ -563,7 +563,7 @@ ${style}`;
       trySetText(() => {
         node.textAlignVertical = data.textAlignVertical || "TOP";
       });
-      const truncates = data.textAutoResize === "TRUNCATE";
+      const truncates = data.textAutoResize === "TRUNCATE" || data.textAutoResize === "TRUNCATE_AND_AUTO_HEIGHT";
       trySetText(() => {
         node.textAutoResize = truncates ? "NONE" : data.textAutoResize || "NONE";
       });

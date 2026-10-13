@@ -1350,57 +1350,80 @@
       ]
     };
   }
-  function decodeImageDataUri(uri, byteLimit) {
-    const match = /^data:image\/(?:png|jpeg);base64,([A-Za-z0-9+/]+={0,2})$/.exec(uri);
-    if (!match || match[1].length % 4 !== 0) return null;
-    const data = match[1];
-    const length = data.length / 4 * 3 - (data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0);
-    if (length <= 0 || length > byteLimit) return null;
-    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    const bytes = new Uint8Array(length);
-    let accumulator = 0, bits = 0, offset = 0;
-    for (let i = 0; i < data.length && data[i] !== "="; i++) {
-      accumulator = accumulator << 6 | alphabet.indexOf(data[i]);
-      bits += 6;
-      if (bits >= 8) {
-        bits -= 8;
-        bytes[offset++] = accumulator >> bits & 255;
-      }
-    }
-    return bytes;
-  }
 
   // src/imagePaintExporter.ts
   var MAX_SVG_BYTES = 12 * 1024 * 1024;
   var MAX_DERIVED_BYTES = 16 * 1024 * 1024;
   function enrichImagePaintTruth(node, json) {
     return __async(this, null, function* () {
-      var _a, _b, _c;
+      var _a;
       const context = state.activeImageAssetContext;
-      if (!context || "children" in node && node.children.length > 0) return;
+      if (!context) return;
       const fills = (_a = json == null ? void 0 : json.geometry) == null ? void 0 : _a.fills;
-      if (!Array.isArray(fills) || fills.length !== 1 || ((_b = fills[0]) == null ? void 0 : _b.type) !== "IMAGE") return;
-      const paint = fills[0];
-      const bakeFilters = Number.isFinite((_c = paint.filters) == null ? void 0 : _c.hue) && Math.abs(paint.filters.hue) > 1e-8;
+      if (!Array.isArray(fills)) return;
+      const imageFills = fills.filter((paint) => (paint == null ? void 0 : paint.type) === "IMAGE");
+      if (imageFills.length === 0) return;
+      const isolate = fills.length !== 1 || "children" in node && node.children.length > 0;
+      let sourceImages = [];
+      if ("fills" in node) {
+        try {
+          const sourceFills = node.fills;
+          if (Array.isArray(sourceFills)) {
+            sourceImages = sourceFills.filter((paint) => paint.type === "IMAGE");
+          }
+        } catch (error) {
+          if (isOutOfMemoryError(error)) throw error;
+          state.logDiagnostic("warn", "[MasterGo2Figma] Source image paint read skipped", {
+            nodeId: node.id,
+            error: describeError(error)
+          });
+        }
+      }
+      for (let index = 0; index < imageFills.length; index++) {
+        const paint = imageFills[index];
+        if (paint.visible === false) continue;
+        yield enrichSingleImagePaint(
+          node,
+          paint,
+          isolate,
+          sourceImages.length === imageFills.length ? sourceImages[index] : void 0,
+          index
+        );
+      }
+    });
+  }
+  function enrichSingleImagePaint(node, paint, isolate, sourcePaint, imageIndex) {
+    return __async(this, null, function* () {
+      var _a;
+      const context = state.activeImageAssetContext;
+      if (!context) return;
+      const bakeFilters = Number.isFinite((_a = paint.filters) == null ? void 0 : _a.hue) && Math.abs(paint.filters.hue) > 1e-8;
       const needsCrop = paint.scaleMode === "CROP" && !paint.imageTransform;
       if (!bakeFilters && !needsCrop) return;
       try {
-        const output = yield node.exportAsync({ format: "SVG" });
+        if (bakeFilters) {
+          const output2 = yield exportIsolatedImagePaint(node, sourcePaint, "PNG", imageIndex);
+          const retained = context.assets.reduce((sum, asset2) => sum + (/^native-(?:svg|png):/.test(asset2.sourceRef) && asset2.bytes ? asset2.bytes.length : 0), 0);
+          if (!(output2 instanceof Uint8Array) || output2.length < 8 || ![137, 80, 78, 71, 13, 10, 26, 10].every((byte, index) => output2[index] === byte) || output2.length > MAX_DERIVED_BYTES - retained) {
+            throw new Error("Native adjusted PNG is invalid or exceeds retained byte limit");
+          }
+          const asset = registerImageAsset(`native-png:${node.id}:fill:${imageIndex}`);
+          asset.bytes = output2;
+          paint.imageRef = asset.key;
+          paint.scaleMode = "CROP";
+          paint.imageTransform = [[1, 0, 0], [0, 1, 0]];
+          delete paint.filters;
+          delete paint.rotation;
+          delete paint.ratio;
+          return;
+        }
+        const output = yield exportImagePaintSvg(node, isolate, sourcePaint, imageIndex);
         if (!output || output.length > MAX_SVG_BYTES) throw new Error("SVG image probe exceeds byte limit");
         let svg = "";
         if (typeof output === "string") svg = output;
         else for (let i = 0; i < output.length; i++) svg += String.fromCharCode(output[i]);
         const truth = parseSvgImageTruth(svg, node.width, node.height);
         if (!truth) throw new Error("SVG image pattern is ambiguous or unsupported");
-        if (bakeFilters) {
-          const retained = context.assets.reduce((sum, asset2) => sum + (asset2.sourceRef.startsWith("native-svg:") && asset2.bytes ? asset2.bytes.length : 0), 0);
-          const bytes = decodeImageDataUri(truth.dataUri, MAX_DERIVED_BYTES - retained);
-          if (!bytes) throw new Error("Native adjusted image exceeds retained byte limit");
-          const asset = registerImageAsset(`native-svg:${node.id}:fill`);
-          asset.bytes = bytes;
-          paint.imageRef = asset.key;
-          delete paint.filters;
-        }
         paint.scaleMode = "CROP";
         paint.imageTransform = truth.imageTransform;
         delete paint.rotation;
@@ -1409,10 +1432,53 @@
         if (isOutOfMemoryError(error)) throw error;
         state.logDiagnostic("warn", "[MasterGo2Figma] Image paint SVG recovery skipped", {
           nodeId: node.id,
+          imageIndex,
           needsCrop,
           bakeFilters,
           error: describeError(error)
         });
+      }
+    });
+  }
+  function exportImagePaintSvg(node, isolate, sourcePaint, imageIndex) {
+    return __async(this, null, function* () {
+      if (!isolate) return node.exportAsync({ format: "SVG" });
+      return exportIsolatedImagePaint(node, sourcePaint, "SVG", imageIndex);
+    });
+  }
+  function exportIsolatedImagePaint(node, sourcePaint, format, imageIndex) {
+    return __async(this, null, function* () {
+      var _a;
+      if (!sourcePaint) throw new Error("Source image paint mapping is ambiguous");
+      const width = node.width, height = node.height;
+      const probe = node.clone();
+      try {
+        probe.name = "__MasterGo2Figma image paint probe";
+        mg.document.currentPage.appendChild(probe);
+        if ("layoutMode" in probe) probe.layoutMode = "NONE";
+        if ("children" in probe) {
+          for (const child of [...probe.children]) child.remove();
+        }
+        if (!("fills" in probe)) throw new Error("Native image clone has no fills");
+        if (probe.type === "TEXT" || probe.type === "LINE") {
+          throw new Error("Native image isolation requires a resizable shape or container");
+        }
+        const original = probe.fills;
+        let ordinal = -1;
+        const target = original.findIndex((paint) => paint.type === "IMAGE" && ++ordinal === imageIndex);
+        if (target < 0) throw new Error("Native image clone mapping is ambiguous");
+        const visible = original.filter((paint) => paint.isVisible !== false);
+        if (visible.length !== 1 || visible[0] !== original[target] || ((_a = sourcePaint.alpha) != null ? _a : 1) !== 1) {
+          probe.fills = original.map((paint, index) => index === target ? __spreadProps(__spreadValues({}, paint), { isVisible: true, alpha: 1 }) : __spreadProps(__spreadValues({}, paint), { isVisible: false }));
+        }
+        probe.width = width;
+        probe.height = height;
+        if ("opacity" in probe) probe.opacity = 1;
+        if ("strokes" in probe) probe.strokes = [];
+        if ("effects" in probe) probe.effects = [];
+        return yield probe.exportAsync({ format });
+      } finally {
+        probe.remove();
       }
     });
   }

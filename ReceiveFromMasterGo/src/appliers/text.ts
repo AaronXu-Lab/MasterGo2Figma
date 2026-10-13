@@ -43,7 +43,11 @@ export async function applyTextProperties(node: TextNode, data: any) {
     // (MasterGo stores the untruncated text and clips at render): the 消息通知
     // row's `10` badge got shoved to x 564 in a 378-wide row. Figma's current
     // spelling is a fixed box plus textTruncation.
-    const truncates = data.textAutoResize === "TRUNCATE";
+    // Preserve the exported box for MasterGo's automatic-height truncation
+    // too: its line limit is not carried by v2, so Figma must not hug the
+    // entire untruncated stored string when importing the snapshot.
+    const truncates = data.textAutoResize === "TRUNCATE"
+        || data.textAutoResize === "TRUNCATE_AND_AUTO_HEIGHT";
     trySetText(() => { node.textAutoResize = truncates ? "NONE" : (data.textAutoResize || "NONE"); });
     trySetText(() => { node.textTruncation = truncates ? "ENDING" : "DISABLED"; });
     trySetText(() => { node.paragraphIndent = data.paragraphIndent || 0; });

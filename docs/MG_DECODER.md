@@ -677,7 +677,14 @@ Sub-field stream after `1c 07` (ascending ids):
 - No `01` prefix → FRAME family, fields (all CRACKED ✓, see `mgParseContainerMeta`):
   - **`03 <b>` = clipsContent** (`03 00` = false; omitted = true for FRAME family; GROUP is
     always false, BOOLEAN/SECTION omit the prop, INSTANCE defaults false);
-  - `04 04 <4×float4>` per-corner radii (zero-compressed; verified 12/16/20);
+  - `04 04 <4×float4>` per-corner radii, **clockwise [topLeft, topRight,
+    bottomRight, bottomLeft]** (zero-compressed). 2026-10-12 native PNG + ZIP
+    cross-tab: six asymmetric buttons had the two bottom corners exchanged;
+    `[6,0,0,6]` means rounded LEFT outer corners, `[0,6,6,0]` RIGHT outer
+    corners. Apply this order when producing named v2 fields, after existing
+    own/inherited scaling. Uniform/top-only/bottom-only samples cannot prove
+    slot order. This evidence is for container field 04, not the separate
+    RECTANGLE field 01 encoding; do not change that branch by analogy.
   - `05 01 07 …` → COMPONENT (component key follows in field 07);
   - `07 …` directly → COMPONENT_SET;
   - `06 01 15 …` → INSTANCE (field 15 = native override table: component ref id + per-child
@@ -1572,3 +1579,52 @@ continue to copy/scale template dimensions during expansion.
   1001 的 `19:00847` 明确存2，MasterGo 图片填充面板显示“拉伸”；旧2=TILE映射错误。
   Figma 用 CROP + identity imageTransform 保留全图非等比拉伸；不应用裁切窗口。
   ZIP 当前将 STRETCH 降为 FILL，是导出端待确认候选，不用该降级值覆盖原生语义。
+
+## Alphanumeric document namespaces (2026-10-12, 中转2....)
+
+Native colon IDs have nonempty ASCII alphanumeric tokens on BOTH sides of `:`;
+the document namespace is not limited to digits. The paired single-page export
+uses `po33:71244` for canvas roots and `ct32:20617` for library paint references,
+with slash-composed instance descendants following the same segment grammar.
+Keep colon-only auxiliary tokens as a separate accepted form. Node/header, paint,
+effect, font/style, run-reference, variable and residue scanners must share this
+namespace allowance; otherwise valid page-owned roots are invisible. Raw root
+header: `01 po33:71244 00 03 a0 00 04 <name> … 1b 0:2 00 1c 07 …`.
+The change preserves record framing and printable sort-code constraints. Current
+paired comparison: 2374/2374 expected records, no missing/type/parent/index/child
+order mismatches; 95 dependency extras, 13795 deep prop differences remain under
+investigation. Actual Figma reimport and native-image comparison remain pending.
+
+### Native text mode 11 and snapshot truncation (2026-10-12)
+
+The TEXT object's leading `03 0b` maps to `TRUNCATE_AND_AUTO_HEIGHT`: all 12
+canvas records with that byte in 中转2.... match the paired ZIP mode. The native
+decoder previously interpreted it as WIDTH_AND_HEIGHT; the common text applier
+also passed the unsupported MasterGo enum directly into Figma. Both paths now
+retain the full editable string in the exported fixed box with ENDING truncation,
+like mode 3/TRUNCATE. The v2 package does not carry the source automatic-height
+line limit, so this is a snapshot replay, not dynamic line-limit equivalence.
+Stable source PNGs show these table fields remain one line rather than expanding
+the entire stored poetry/description. Automated decoding and API-rejection tests
+cover the path; final actual reimport remains pending.
+
+### 1012 final local and canvas verification
+
+Both receiver builds and 158 Node tests pass; current stable pair has 0 missing,
+0 type/parent/index/child-order mismatches, 95 required temporary library records,
+and 13783 deep-prop differences (default min/max/wrap/grid fields dominate).
+The actual MG and ZIP imports each retain 13 canvas roots / 2374 layers after
+library cleanup. All 13 native PNGs are placed in the image page. Source auto-layout
+reflow during selection changed five root heights; separately saved stable assets
+and source AX confirm those sizes, and the originals remain preserved.
+The 12 automatic-height truncating texts now retain their exported boxes/ellipsis
+in real reimports; screenshots show the long sidebar descriptions no longer spill.
+Missing Alibaba PuHuiTi 2.0 Regular/Bold remains (plugin counts 504/514). A distinct
+non-font residual is the 试听数 card: native hue is pink, both imported paints are
+blue. SendToFigma image truth enrichment excludes containers/multiple fills, and
+this CROP paint lacks a ZIP transform plus carries unsupported hue. Export-side
+expansion is a candidate pending user authorization, not implemented. The native
+MG also retains crop data whereas ZIP omits it. Do not claim all deep diff is zero
+or invoke the only-missing-font early completion branch. Final visual acceptance
+and export-side decision remain with the user. Private artifacts live outside
+the repository in Downloads/测试集 1012 2; final Figma file 3wT3bian5YLQxyiuIDRTpn.

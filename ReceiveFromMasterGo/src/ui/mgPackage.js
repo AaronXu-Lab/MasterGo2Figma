@@ -340,7 +340,7 @@
         p = txt.end + 1;
         if (bytes[p] !== 0x03) return null;
         const ref = mgReadCString(bytes, p + 1, Math.min(end, p + 40));
-        if (!ref || !/^[0-9]+:[0-9A-Za-z]+(?:\/[0-9]+:[0-9A-Za-z]+)*$/.test(ref.text)) return null;
+        if (!ref || !/^[0-9A-Za-z]+:[0-9A-Za-z]+(?:\/[0-9A-Za-z]+:[0-9A-Za-z]+)*$/.test(ref.text)) return null;
         p = ref.end + 1;
         // Explicit run flag on synced style overrides (e.g. mixed-size
         // body/cost text). Consume before the optional glyph payload.
@@ -411,7 +411,7 @@
       p = mask.next;
       if (!Number.isFinite(mask.value) || p >= end || bytes[p++] !== 0x0a) return null;
       const style = mgReadCString(bytes, p, end);
-      if (!style || !/^[0-9]+:[0-9A-Za-z]+$/.test(style.text) || bytes[style.end + 1] !== 0) return null;
+      if (!style || !/^[0-9A-Za-z]+:[0-9A-Za-z]+$/.test(style.text) || bytes[style.end + 1] !== 0) return null;
       return { characters: "", charactersFromRuns: true, firstStyleRef: style.text, fontRuns: [] };
     }
 
@@ -450,7 +450,7 @@
         if (bytes[p] !== 0x02) continue;
         const c = mgReadCString(bytes, p + 1, end);
         if (!c || c.end + 1 >= end || bytes[c.end + 1] !== 0x03) continue;
-        if (c.text && c.text.length < 500 && !/^[0-9]+:[0-9A-Za-z]+$/.test(c.text)) {
+        if (c.text && c.text.length < 500 && !/^[0-9A-Za-z]+:[0-9A-Za-z]+$/.test(c.text)) {
           characters = c.text;
           break;
         }
@@ -499,7 +499,7 @@
             }
             if (tag === 0x03) {
               const ref = mgReadCString(bytes, q, end);
-              if (!ref || !/^[0-9]+:[0-9A-Za-z]+$/.test(ref.text)) { valid = false; break; }
+              if (!ref || !/^[0-9A-Za-z]+:[0-9A-Za-z]+$/.test(ref.text)) { valid = false; break; }
               paintRef = ref.text;
               q = ref.end + 1;
               continue;
@@ -861,7 +861,7 @@
       const paints = {};
       // Library-bearing editor exports allocate paint-child ids from the
       // colon-token space (`:396`), not the numeric node-id space.
-      const ID = "(?::[0-9A-Za-z]+|[0-9]+:[0-9A-Za-z]+)";
+      const ID = "(?::[0-9A-Za-z]+|[0-9A-Za-z]+:[0-9A-Za-z]+)";
       const markRe = new RegExp("\\x01(" + ID + ")\\x00\\x02(" + ID + ")\\x00\\x03([^\\x00]+)\\x00", "g");
       const marks = [];
       let m;
@@ -929,7 +929,7 @@
     // fails closed instead of minting a wrong PNG setting).
     function mgScanExportSettings(bytes, str) {
       const table = {};
-      const ID = "(?::[0-9A-Za-z]+|[0-9]+:[0-9A-Za-z]+)";
+      const ID = "(?::[0-9A-Za-z]+|[0-9A-Za-z]+:[0-9A-Za-z]+)";
       const markRe = new RegExp("\\x01(" + ID + ")\\x00\\x02(" + ID + ")\\x00\\x03([^\\x00]+)\\x00\\x06", "g");
       let m;
       while ((m = markRe.exec(str))) {
@@ -991,7 +991,7 @@
     // Walk fields in order; do not search float payloads for tags.
     function mgScanLayoutGrids(bytes, str) {
       const table = {};
-      const re = /\x01([0-9]+:[0-9A-Za-z]+)\x00\x02([0-9]+:[0-9A-Za-z]+)\x00\x03([\x20-\x7e]+)\x00\x04\x02/g;
+      const re = /\x01([0-9A-Za-z]+:[0-9A-Za-z]+)\x00\x02([0-9A-Za-z]+:[0-9A-Za-z]+)\x00\x03([\x20-\x7e]+)\x00\x04\x02/g;
       let match;
       while ((match = re.exec(str))) {
         let p = match.index + match[0].length;
@@ -1032,7 +1032,7 @@
     function mgScanEffects(bytes, str) {
       const effects = {};
       // Same colon-token child-id space as mgScanPaints.
-      const ID = "(?::[0-9A-Za-z]+|[0-9]+:[0-9A-Za-z]+)";
+      const ID = "(?::[0-9A-Za-z]+|[0-9A-Za-z]+:[0-9A-Za-z]+)";
       const markRe = new RegExp("\\x01(" + ID + ")\\x00\\x02(" + ID + ")\\x00\\x03([^\\x00]+)\\x00", "g");
       const marks = [];
       let m;
@@ -1140,7 +1140,7 @@
     ];
     function mgScanStyleDefs(bytes, str, fontStyles) {
       const defs = {};
-      const ID = "[0-9]+:[0-9A-Za-z]+";
+      const ID = "[0-9A-Za-z]+:[0-9A-Za-z]+";
       // The windows-1252 view keeps a 1:1 byte↔char offset mapping, so the
       // regex only LOCATES candidates; the name itself is re-decoded as
       // UTF-8 straight from the byte range.
@@ -2119,7 +2119,7 @@
     // already applied).
     function mgScanFontStyles(bytes, str) {
       const styles = {};
-      const ID = "[0-9]+:[0-9A-Za-z]+(?:\\/[0-9]+:[0-9A-Za-z]+)*";
+      const ID = "[0-9A-Za-z]+:[0-9A-Za-z]+(?:\\/[0-9A-Za-z]+:[0-9A-Za-z]+)*";
       // Three entry spellings: the compact one (`01 <id> 00 05 <kind>`), the
       // 0711-3 style-library one with explicit-empty parent/sort/04 fields
       // (`01 <id> 00 02 00 03 00 04 00 05 <kind>`), and the 0712-3 STYLE
@@ -2338,7 +2338,7 @@
     // (2:09860/2:30074), and the weak type-tag fallback can misread unrelated
     // bytes after the record's ~40-byte body as a node type (2:30073 swallowed
     // the font-table region and decoded as LINE).
-    const MG_RESIDUE_REF_RE = /^[0-9]+:[0-9A-Za-z]+(?:\/[0-9]+:[0-9A-Za-z]+)*$/;
+    const MG_RESIDUE_REF_RE = /^[0-9A-Za-z]+:[0-9A-Za-z]+(?:\/[0-9A-Za-z]+:[0-9A-Za-z]+)*$/;
     function mgIsRegistryResidueRecord(bytes, str, fb, end) {
       if (bytes[fb] !== 0x07 || (bytes[fb + 1] !== 0x00 && bytes[fb + 1] !== 0x01)) return false;
       if (bytes[fb + 2] !== 0x08) return false;
@@ -2352,7 +2352,7 @@
       const utf8 = new TextDecoder("utf-8");
       // Instance children are stored as their own records with slash-composed
       // ids (`2:1010/2:0162`); page ids can be short tokens (`M`).
-      const ID = "[0-9]+:[0-9A-Za-z]+(?:\\/[0-9]+:[0-9A-Za-z]+)*";
+      const ID = "[0-9A-Za-z]+:[0-9A-Za-z]+(?:\\/[0-9A-Za-z]+:[0-9A-Za-z]+)*";
       const OWNER = "[0-9A-Za-z:\\/]{1,64}";
       const paints = mgScanPaints(bytes, str);
       const geoms = mgScanGeometryBlobs(bytes, str);
@@ -2553,7 +2553,8 @@
             // node in the 0806 汇总 fixture spells 3 — and it is that one.
             if (tt === 0x03) {
               textAutoResize = bytes[tp + 1] === 1 ? "HEIGHT"
-                : bytes[tp + 1] === 3 ? "TRUNCATE" : "WIDTH_AND_HEIGHT";
+                : bytes[tp + 1] === 3 ? "TRUNCATE"
+                : bytes[tp + 1] === 11 ? "TRUNCATE_AND_AUTO_HEIGHT" : "WIDTH_AND_HEIGHT";
               tp += 2;
               continue;
             }
@@ -3305,7 +3306,8 @@
           const mixed = c4.some(v => Math.abs(v - c4[0]) > 1e-6);
           props.corner = {
             topLeftRadius: c4[0], topRightRadius: c4[1],
-            bottomLeftRadius: c4[2], bottomRightRadius: c4[3],
+            // Container field 04 is clockwise: TL, TR, BR, BL (1012 PNG/ZIP).
+            bottomLeftRadius: c4[3], bottomRightRadius: c4[2],
             cornerRadius: mixed ? -1 : c4[0],
             cornerSmoothing: trailer.cornerSmoothing || inheritedTrailer.cornerSmoothing || 0
           };
@@ -4712,8 +4714,8 @@
       // can additionally be short tokens like `M` (share/partial exports) or
       // colon-prefixed tokens like `:7384` (editor exports that embed external
       // library documents use colon tokens for page/canvas owners).
-      const idRe = /^(?:[0-9]+:[0-9A-Za-z]+(?:\/[0-9]+:[0-9A-Za-z]+)*|[A-Za-z][0-9A-Za-z]{0,7}|:[0-9A-Za-z]{1,12})$/;
-      const nodeIdRe = /^[0-9]+:[0-9A-Za-z]+(?:\/[0-9]+:[0-9A-Za-z]+)*$/;
+      const idRe = /^(?:[0-9A-Za-z]+:[0-9A-Za-z]+(?:\/[0-9A-Za-z]+:[0-9A-Za-z]+)*|[A-Za-z][0-9A-Za-z]{0,7}|:[0-9A-Za-z]{1,12})$/;
+      const nodeIdRe = /^[0-9A-Za-z]+:[0-9A-Za-z]+(?:\/[0-9A-Za-z]+:[0-9A-Za-z]+)*$/;
       const limit = Math.min(headerEnd > 0 ? headerEnd : bytes.length, 200000);
       let p = 0;
       while (p < limit) {
@@ -5498,6 +5500,7 @@
       resolveInstanceVisibility: mgResolveInstanceVisibility,
       shouldInheritStroke: mgShouldInheritStroke,
       decodeNativeNodes: mgDecodeNativeNodes,
+      nativeProps: mgNativeProps,
       decodeGeometryBlob: mgDecodeGeometryBlob,
       scanLayoutGrids: mgScanLayoutGrids,
       parseContainerMeta: mgParseContainerMeta,
