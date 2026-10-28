@@ -1,6 +1,98 @@
 # MG / ZIP 导入一致性状态
 
-最后更新：2026-10-09（导出055 的字体条目与 AUTO 行高修复；历史章节保留各轮实际结果）
+最后更新：2026-10-27（1027 新ZIP实际校验通过，保留已披露缺字体与像素取整例外）
+
+## 2026-10-27 · 测试集 1027：接收端修复已验证，待用户验收
+
+私有 MG、v2 ZIP、哈希、51张原生PNG与本轮诊断保存在 Downloads/测试集 1027，未入库。
+[Figma 对比文件](https://www.figma.com/design/ngX2aMUYtMT9YGeiX0R1eW)保留初始
+MG `3:2`、ZIP `3:7699`、原生 image `3:15399`。源唯一「页面 1」、51根层、6083记录。
+图片覆盖、顺序、坐标、自然尺寸与无后代结构51/51通过；第51张逻辑高度1365.50146484375，
+原生PNG1366，原生SVG证实顶左边界，保留约0.5px像素取整例外。MasterGo已安全退出。
+
+本轮接收端修复：
+
+- ZIP64逐图片大小哨兵被误读，150MB归档产生约21GB错误切片；UI/Node现在共享边界校验
+  读取器。263条成员的大小与SHA256全部匹配Python zipfile，读取约14ms/RSS190MB。
+- 符号字体族丢失字号、连字符样式被截断、family-only PostScript误切，以及短中文样式匹配。
+  金额＋10000由错误22px恢复90px；缺少真实字重仍保留缺字报告。
+- 新蒙版类型与4条自身绘制标记；MG弹窗白底及启动图轮廓裁剪。旧ZIP缺isMaskOutline，
+  不以接收端猜测掩盖，记录发送端候选。
+- 布尔内轮廓端点相差0.000059px却无闭合region，导致两个关闭圆环变实心；只在布尔组合
+  阶段补闭合边/region，保留原顶点与可编辑结构。
+- 阴影07混合模式3处、矩形底部圆角顺序5处、零高度渐变细线16处。
+
+自动化：186/186 Node测试通过，两端构建通过，git diff --check通过。当前样本
+6083/6083，missing/extra/type/parent/index/child-order/geometry/transform/effects/text/
+vector-network全部0；font103、paint8（CROP单位变换的省略/显式写法）、deep28933，compare
+仍退出1。deep主要是null尺寸限制/默认布局；不能据此声称完全一致。
+0806独立工作树A/B具名计数均不变；deep1274→1284仅新增10条旧ZIP未携带的maskType，
+额外库依赖中同类10条记录也只新增该字段。其余历史主fixture本地缺失，未声称已回归。
+
+最终实际导入MG `8:37031`（页面 1_mg_修复1027）与ZIP `8:44731`（页面 1_zip_修复1027）
+均明确成功1页/6083记录；各51根层、6078场景节点、981文本，根层几何相对初始ZIP无偏差。
+插件与真实节点前缀均确认两页各738缺字体（MG原832、ZIP原885）。font-exceptions.csv包含
+全部1476条节点链接和所需字体；Source Han Sans CN缺失引起9:41 AM换行，★風雲等缺失保留
+字形/粗细差异，未擅自选近似字重。
+
+最终102张逐区截图（0.35倍）及13张三联图全部检查，小图标45补2.5倍取图。MG启动图与
+白色弹窗底板恢复；两页的关闭圆环、16条渐变细线恢复；金额90px、矩形非对称底角已核验。
+visual/hotspots-before-after.jpg保留前后证据。两条中间页8:21631/8:29331已清理，初始三页和
+最终两页保留；诊断临时修改已恢复。上述实际导入与截图来自发送端续作前的资产，待用户验收，
+不称完全一致。旧ZIP启动图9/10缺蒙版类型、第22区规则文本缺编号语义；真实缺失字体与
+第51张像素取整仍保留。
+
+### 发送端续作：实现与自动化完成，新ZIP实际校验通过
+
+用户已确认继续补蒙版导出和调查列表编号。本节更正前轮“现有MasterGo类型声明没有列表字段”
+的判断：已安装公开类型与[官方TextNode文档](https://developers.mastergo.com/apis/textNode.html)
+均有 `listStyles`，并明确分段样式与列表范围按Unicode码点计数。
+
+- 普通序列化及fallback均导出 `blend.maskType`：显式 `isMaskOutline=true` → VECTOR，
+  false → ALPHA；属性缺失、读取失败或非布尔值时省略，不猜测。既有 `maskRendersFill` 逻辑保留。
+  映射依据[MasterGo蒙版API](https://developers.mastergo.com/apis/rectangleNode.html)。
+- v2新增可选 `props.textListRanges[]`：`start/end` 是UTF-16半开区间，`type` 是
+  ORDERED/UNORDERED/NONE，`indentation` 是0–4层级，分别来自公开列表type与level。
+  仅在有效ORDERED元数据覆盖段首时去掉已观察到的U+F0010，未知私有字符保留；不凭字符猜编号。
+  BULLETED映射UNORDERED；无列表的显式NONE可清除实例继承的列表格式。
+- 同步将新导出 `styledTextSegments` 从码点换为删除标记后的UTF-16范围，附加
+  `textRangeUnit="UTF16"`；旧ZIP无该字段时仍沿用完整覆盖范围的兼容推断。
+  普通文字和实例后代使用[Figma原生列表API](https://developers.figma.com/docs/plugins/api/TextSublayer/)，
+  混合字号列表保持一个文本节点，避免逐行拆分使编号从1重启。
+- 本轮197/197 Node测试通过，两端完整构建通过，产物位于原仓库。
+  回归覆盖alpha/vector与fallback、旧ZIP、七段列表、emoji、混合字号、缩进、NONE、空段、
+  无效范围及可选setter失败。未更改本轮原生MG列表解码，未重跑无关fixture比较。
+- 上述代码交付时尚待手测；随后用户完成原生新ZIP导出与Figma导入，明确委托agent校验，
+  实际结果如下。原生MG及旧ZIP不会自动补出缺失列表元数据。
+
+用户手测清单及构建摘要保存在本批次 `sender-manual-test.md` / `sender-verification.json`。
+Agent没有重开MasterGo、重复导出或重新导入；只核实用户已完成的新资产与新增页。
+
+#### 用户重新导出/导入后的实际校验
+
+新包 `mastergo2figma-partial-pages-2026-10-28T01-24-34-415Z.zip`（UTC文件名，对应10月27日EDT），
+158501167字节，仍为同一documentId、唯一页面、6083记录。新旧记录ID集合相同，259张图片
+逐张SHA256完全相同。全部1620处记录字段差异仅为511条maskType、981条textListRanges、
+121条textRangeUnit、两处含emoji的文本共6个范围边界、规则文本删除7个U+F0010；没有record级变更。
+121个混合文本节点的码点→UTF-16映射均独立检查通过。
+
+[新ZIP页](https://www.figma.com/design/ngX2aMUYtMT9YGeiX0R1eW?node-id=65-52431)
+为 `页面 1_zip_修复1027_2`：51根层、6078场景节点、981文本、511个蒙版。
+全部51根层的结构及几何签名与前轮ZIP页相同；外观签名变化仅来自预期maskType，
+排除该字段后51/51一致。文字属性仅第22区正文去标记，其他根层一致。
+
+启动图9 `65:54041`、10 `65:54088`恢复轮廓蒙版和原生色彩，泛白消失；
+规则 `65:55330` 的7段均为原生ORDERED，内容141个UTF-16单元且无私有标记，实际显示连续1–7。
+51张新截图与原生PNG、旧ZIP组成13张三联图，全部检查；小图标45补2.5倍，图片51的自然边界例外保留。
+桌面Figma也确认启动图颜色、原生编号及规则文本实际使用Inter Regular 26替代缺失的Source Han Sans CN。
+
+新页仍有738个缺字体文本、21种family/style组合，节点前缀/对应路径与前轮一致；
+`sender-review/new-font-exceptions.csv`保存全部新节点链接。字体字形/粗细和换行差异未消失，
+不称像素完全一致。此样本实际覆盖一级有序列表及NONE，未把单元测试当成嵌套/无序列表实机覆盖。
+
+完整证据位于本批次 `sender-review/`，包括新ZIP身份与字段比较、实际节点摘要、13张三联图、
+桌面截图、列表逐段属性与字体清单。本轮未改功能代码，沿用上轮197测试与两端构建结果；
+本轮只执行取证与文档检查。技术结论为本次ZIP蒙版/列表修复通过，无未解释的新退化。
 
 ## 2026-10-09 · 导出055：已验收，导出端优化延期
 

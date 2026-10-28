@@ -549,6 +549,9 @@ export async function applyUniversalProperties(node: any, data: any) {
     if (data.blend) {
         safeSet(node, "opacity", data.blend.opacity ?? 1);
         safeSet(node, "isMask", data.blend.isMask ?? false);
+        if (["ALPHA", "VECTOR", "LUMINANCE"].indexOf(data.blend.maskType) >= 0) {
+            safeSet(node, "maskType", data.blend.maskType);
+        }
         safeSet(node, "blendMode", data.blend.blendMode || "NORMAL");
         if (data.blend.effects) {
             safeSetEffects(node, data.blend.effects);

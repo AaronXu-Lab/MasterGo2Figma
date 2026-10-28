@@ -168,6 +168,9 @@ const FONT_FAMILY_ALIASES: { [family: string]: string } = {
 };
 
 const FONT_STYLE_ALIASES: { [style: string]: string } = {
+    "常规": "regular",
+    "中等": "medium",
+    "粗体": "bold",
     "常规体": "regular",
     "中黑体": "medium",
     "中粗体": "semibold",

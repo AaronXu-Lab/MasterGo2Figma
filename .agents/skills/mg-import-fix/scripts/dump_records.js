@@ -8,7 +8,7 @@
 const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
-const zlib = require("zlib");
+const { readZipEntries } = require("../../../../tools/read_zip_entries.js");
 
 const REPO_ROOT = path.resolve(__dirname, "../../../..");
 const [mgArg, zipArg, outArg] = process.argv.slice(2);
@@ -23,38 +23,6 @@ const outDir = path.resolve(outArg);
 const textDecoder = new TextDecoder("utf-8");
 function decodeUtf8(bytes) { return textDecoder.decode(bytes); }
 
-function readZipEntries(filePath) {
-  const buf = fs.readFileSync(filePath);
-  const bytes = new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
-  const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
-  let eocdOffset = -1;
-  for (let offset = view.byteLength - 22; offset >= 0; offset--) {
-    if (view.getUint32(offset, true) === 0x06054b50) { eocdOffset = offset; break; }
-  }
-  if (eocdOffset < 0) throw new Error(`Invalid zip: ${filePath}`);
-  const entryCount = view.getUint16(eocdOffset + 10, true);
-  const centralOffset = view.getUint32(eocdOffset + 16, true);
-  const entries = {};
-  let offset = centralOffset;
-  for (let i = 0; i < entryCount; i++) {
-    const method = view.getUint16(offset + 10, true);
-    const compressedSize = view.getUint32(offset + 20, true);
-    const nameLength = view.getUint16(offset + 28, true);
-    const extraLength = view.getUint16(offset + 30, true);
-    const commentLength = view.getUint16(offset + 32, true);
-    const localOffset = view.getUint32(offset + 42, true);
-    const name = decodeUtf8(bytes.slice(offset + 46, offset + 46 + nameLength));
-    if (!name.endsWith("/")) {
-      const localNameLength = view.getUint16(localOffset + 26, true);
-      const localExtraLength = view.getUint16(localOffset + 28, true);
-      const dataStart = localOffset + 30 + localNameLength + localExtraLength;
-      const compressed = Buffer.from(bytes.slice(dataStart, dataStart + compressedSize));
-      entries[name] = method === 0 ? compressed : zlib.inflateRawSync(compressed);
-    }
-    offset += 46 + nameLength + extraLength + commentLength;
-  }
-  return entries;
-}
 
 function loadPackageRecords(entries) {
   const manifest = JSON.parse(decodeUtf8(entries["manifest.json"]));

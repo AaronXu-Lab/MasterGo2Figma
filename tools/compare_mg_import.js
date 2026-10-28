@@ -4,7 +4,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
-const zlib = require("zlib");
+const { readZipEntries } = require("./read_zip_entries.js");
 
 const root = path.resolve(__dirname, "..");
 function newestMatchingFile(pattern) {
@@ -32,49 +32,6 @@ function decodeUtf8(bytes) {
   return textDecoder.decode(bytes);
 }
 
-function readZipEntries(filePath) {
-  const buf = fs.readFileSync(filePath);
-  const bytes = new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
-  const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
-  let eocdOffset = -1;
-
-  for (let offset = view.byteLength - 22; offset >= 0; offset--) {
-    if (view.getUint32(offset, true) === 0x06054b50) {
-      eocdOffset = offset;
-      break;
-    }
-  }
-  if (eocdOffset < 0) throw new Error(`Invalid zip: ${filePath}`);
-
-  const entryCount = view.getUint16(eocdOffset + 10, true);
-  const centralOffset = view.getUint32(eocdOffset + 16, true);
-  const entries = {};
-  let offset = centralOffset;
-
-  for (let i = 0; i < entryCount; i++) {
-    if (view.getUint32(offset, true) !== 0x02014b50) throw new Error("Bad central directory");
-    const method = view.getUint16(offset + 10, true);
-    const compressedSize = view.getUint32(offset + 20, true);
-    const nameLength = view.getUint16(offset + 28, true);
-    const extraLength = view.getUint16(offset + 30, true);
-    const commentLength = view.getUint16(offset + 32, true);
-    const localOffset = view.getUint32(offset + 42, true);
-    const name = decodeUtf8(bytes.slice(offset + 46, offset + 46 + nameLength));
-
-    if (!name.endsWith("/")) {
-      if (view.getUint32(localOffset, true) !== 0x04034b50) throw new Error("Bad local header");
-      const localNameLength = view.getUint16(localOffset + 26, true);
-      const localExtraLength = view.getUint16(localOffset + 28, true);
-      const dataStart = localOffset + 30 + localNameLength + localExtraLength;
-      const compressed = Buffer.from(bytes.slice(dataStart, dataStart + compressedSize));
-      entries[name] = method === 0 ? compressed : zlib.inflateRawSync(compressed);
-    }
-
-    offset += 46 + nameLength + extraLength + commentLength;
-  }
-
-  return entries;
-}
 
 async function convertMgWithUiDecoder() {
   const mgPackageSource = fs.readFileSync(mgPackagePath, "utf8");

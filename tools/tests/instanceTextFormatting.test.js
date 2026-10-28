@@ -5,7 +5,7 @@ const esbuild = require('../../ReceiveFromMasterGo/node_modules/esbuild');
 const { __test } = require('../../ReceiveFromMasterGo/src/ui/mgPackage.js');
 const source = fs.readFileSync(require.resolve('../../ReceiveFromMasterGo/src/appliers/text.ts'), 'utf8');
 const start = source.indexOf('export async function applyInstanceTextFormatting(');
-const end = source.indexOf('function trySetRange(', start);
+const end = source.indexOf('export function applyTextListRanges(', start);
 const js = esbuild.transformSync(source.slice(start,end).replace('export ',''), {loader:'ts',target:'es2017'}).code;
 
 test('slim text overrides restore 14/20 typography over an 11/16 master without resizing it', async () => {
@@ -14,8 +14,8 @@ test('slim text overrides restore 14/20 typography over an 11/16 master without 
   const node = {fontName:font,fontSize:11,lineHeight:{unit:'PIXELS',value:16},width:55,height:16,
     getStyledTextSegments:()=>[{fontName:font}]};
   const apply = new Function('figma','loadFontCached','ensureAvailableFontsLoaded','resolveAvailableFontName',
-    'trySetText','applyStyledTextSegments',js+';return applyInstanceTextFormatting;')(
-      {mixed:Symbol()},async f=>loaded.push(f),async()=>{},()=>font,fn=>fn(),async()=>{});
+    'trySetText','applyStyledTextSegments','applyTextListRanges',js+';return applyInstanceTextFormatting;')(
+      {mixed:Symbol()},async f=>loaded.push(f),async()=>{},()=>font,fn=>fn(),async()=>{},()=>{});
   const props = __test.slimInstanceDescendantProps({type:'TEXT',fontName:font,fontSize:14,
     lineHeight:{unit:'PIXELS',value:20}});
   await apply(node,props);
@@ -31,8 +31,8 @@ test('missing requested font still restores size and line height using the loade
   const node = {fontName:font,fontSize:11,lineHeight:{unit:'PIXELS',value:16},
     getStyledTextSegments:()=>[{fontName:font}]};
   const apply = new Function('figma','loadFontCached','ensureAvailableFontsLoaded','resolveAvailableFontName',
-    'trySetText','applyStyledTextSegments',js+';return applyInstanceTextFormatting;')(
-      {mixed:Symbol()},async()=>{},async()=>{},()=>null,fn=>fn(),async()=>{});
+    'trySetText','applyStyledTextSegments','applyTextListRanges',js+';return applyInstanceTextFormatting;')(
+      {mixed:Symbol()},async()=>{},async()=>{},()=>null,fn=>fn(),async()=>{},()=>{});
   await apply(node,{fontName:{family:'Unavailable',style:'Regular'},fontSize:14,lineHeight:{unit:'PIXELS',value:20}});
   assert.deepEqual(node.fontName,font);
   assert.equal(node.fontSize,14);

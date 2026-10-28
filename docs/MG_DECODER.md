@@ -10,6 +10,75 @@ they are unreliable (non-restored id prefixes, stale gradient transforms, vector
 fill regions). The native decoder in `ReceiveFromMasterGo/src/ui/mgPackage.js` reads the binary
 directly; embedded JSON is only an overlay for props not yet natively decoded.
 
+## ZIP container: per-entry ZIP64 sizes (2026-10-27)
+
+MasterGo can use ZIP64 for individual image entries even when the complete `.mg`
+is smaller than 4 GiB. In the 1027 private fixture, the central directory stores
+`0xffffffff` in both 32-bit size fields and the actual sizes in extra field
+`0x0001`. Reading the sentinel as a length takes every subsequent archive byte
+as part of the image: the 150,485,333-byte snapshot produced about 21 GB of
+repeated buffers in the old Node reader and excessive hashing in the UI.
+
+`shared/zipArchive.js` now resolves conditional ZIP64 size/offset fields in the
+order defined by [PKWARE APPNOTE 4.5.3](https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT),
+as well as ZIP64 end records. It checks each payload range before slicing.
+The UI engine and `tools/read_zip_entries.js` share this directory reader;
+compare, dump-records and hexdump use the Node wrapper. This does not change
+native node-field decoding. Validate image byte lengths as well as record counts:
+the broken reader still decoded all 6,083 nodes correctly.
+
+## 2026-10-27 · 1027 native field refinements
+
+- Font names are bounded UTF-8 names, including Unicode letter/number/symbol prefixes.
+  The entry for `★風雲` was rejected by the old ASCII/CJK prefix grammar, losing its
+  90px fontSize and falling back to 22px. Controls, slash/backslash separators and
+  replacement characters remain rejected. Do not broaden the grammar to arbitrary bytes.
+- JSON field `12.fontStyle` may contain a complete hyphenated face (`Bold-Round`,
+  `Medium-Round`). Compare the entire PostScript suffix, rather than only the last
+  hyphen. A PostScript name equal to the display family after separator normalization
+  (`HelloFont-ID-XuanZhenSong`) has no separate style suffix: keep explicit `Regular`.
+  A genuine localized alias still defers to the PostScript face (`中黑体` → `Medium`).
+- Shadow registry field `07` carries the standard blend enum (2 = MULTIPLY). All
+  three 1027 MULTIPLY shadows carry `07 02`; consuming this as an ignored flag lost
+  their blend. Missing field remains PASS_THROUGH. Field `10` remains unclassified.
+- New mask trailers with `37=3` distinguish outline coverage from alpha: observed
+  `36` omitted/1/3 map to VECTOR, 2 to ALPHA. Unknown values and legacy trailers do
+  not emit a maskType. The current fixture has 9 omitted-mode outlines, one alpha
+  and 4 painted outlines. The painted spelling `2f=1,36=3` is accepted alongside
+  the earlier `2f=1,36=1`; explicit `27=0` still wins. The four white painted masks
+  cross-tab true against ZIP `isMaskVisible`, all 507 other masks cross-tab false.
+  Temporarily changing the gradient mask to VECTOR restores the native startup
+  artwork; the original baseline was restored after this diagnostic.
+  API semantics: [MasterGo outline/visible flags](https://developers.mastergo.com/apis/rectangleNode.html)
+  and [Figma VECTOR mask mapping](https://developers.figma.com/docs/rest-api/changelog/#october-18-2023).
+  The binary mode mapping above is inferred from the native/ZIP cross-table and rendered evidence.
+- Zero-axis linear-gradient strokes use the pixel-space limit on the nonzero axis.
+  For a horizontal hairline, row0 is `[1/dx,0,-p0.x/dx]`; retain the normalized
+  perpendicular row. The normalized-square fallback made 16 brown title strokes
+  disappear. Native PNG crops and the ZIP support the limit; do not invent a
+  fixed nonzero height. Vertical hairlines use the corresponding y limit.
+- Rectangle `1c 03 01 04` corner arrays, like container corner arrays, are clockwise:
+  TL/TR/BR/BL. The earlier BL/BR interpretation was indistinguishable on symmetric
+  samples. Five asymmetric 1027 caps verify the lower-corner swap.
+
+Importer semantics: Figma boolean operands need an explicit region for an almost
+closed contour. Two close icons carry an inner four-cubic chain whose distinct
+endpoints differ by 0.000059px and whose regions are empty; Figma ignored the hole.
+The receiver adds a closing edge and EVENODD region only inside boolean combination,
+for one connected nonbranched chain with endpoint separation ≤0.001px. It does not
+change ordinary Group vectors, real open paths, existing regions or vertex positions.
+A diagnostic produced the native ring and cross, then restored the initial operand.
+
+The saved 1027 ZIP omits MasterGo `isMaskOutline`; the receiver cannot infer that flag
+from gradient colors. The task-rule text also carries U+F0010 list markers without
+ordered-list metadata. The subsequent authorized sender change exports explicit
+mask coverage and public `listStyles` as native Figma list ranges, including code-point
+to UTF-16 conversion. The user re-exported/imported a new ZIP; page `65:52431` was then
+verified against all 51 native-image regions and the previous ZIP page. Startup masks
+and the seven ordered paragraphs now render correctly; 738 missing-font texts remain.
+The old saved ZIP/pages are preserved. Native MG list metadata is still undecoded.
+See [parity status](MG_ZIP_PARITY_STATUS.md) for evidence and coverage limits.
+
 ## Rosetta Stone (ground truth)
 - `新文件.mg` (repo root, 2026-07-09) — a real-world UI design (Tesla-style driving app), exported
   in the **share/partial** form (see the dedicated section below): component template trees +
@@ -491,7 +560,8 @@ Result: deep-prop 1304 → 60, font 166 → 4, geometry/transform/index → 0. F
   Texts whose font MasterGo itself could not resolve export fontWeight **0** in the baseline
   (FF DIN Pro / ReeJi rows) — no package-side signal, accepted residual (ours is truer).
 - **RECTANGLE `1c 03 01 04` introduces a PER-CORNER array** of 4 zero-compressed floats
-  [topLeft, topRight, bottomLeft, bottomRight]; mixed values export per-corner radii with the
+  [topLeft, topRight, bottomRight, bottomLeft] (clockwise; corrected by 1027 asymmetric
+  left-cap and diagonal-corner rectangles); mixed values export per-corner radii with the
   `cornerRadius: -1` sentinel. The old single-raw-float read only survived uniform rectangles —
   a zero-compressed first corner (`00`) landed it mid-payload and minted denormal garbage
   (2.31e-41). Template inheritance carries the array like the uniform radius.

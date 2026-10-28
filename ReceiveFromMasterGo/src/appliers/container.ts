@@ -1,4 +1,5 @@
 import { state } from "../state";
+import { closeCoincidentBooleanContour } from "./booleanContours";
 import { safeResize, safeSet } from "../../../shared/utils";
 import { ImportLayerRecord } from "../../../shared/types";
 import { appendRestoredNode, safeRemove, hasUsableVectorNetwork } from "../nodeCreator";
@@ -422,6 +423,17 @@ export async function combineBooleanShell(
     if (!parent || !("insertChild" in parent)) return null;
 
     const children = [...shell.children] as SceneNode[];
+    for (const child of children) {
+        if (child.type !== "VECTOR") continue;
+        const network = child.vectorNetwork;
+        const closed = closeCoincidentBooleanContour(network);
+        if (closed === network) continue;
+        try {
+            await child.setVectorNetworkAsync(closed);
+        } catch (error) {
+            console.warn("Unable to close coincident boolean contour:", child.name, error);
+        }
+    }
     if (children.length === 1) {
         return await promoteSingleBooleanChild(shell, children[0], data);
     }

@@ -59,17 +59,18 @@ export async function applyTextProperties(node: TextNode, data: any) {
     if (data.lineHeight !== undefined) trySetText(() => { node.lineHeight = data.lineHeight; });
 
     if (Array.isArray(data.styledTextSegments) && data.styledTextSegments.length > 0) {
-        await applyStyledTextSegments(node, data.styledTextSegments);
+        await applyStyledTextSegments(node, data.styledTextSegments, data.textRangeUnit);
     }
+    applyTextListRanges(node, data.textListRanges);
 }
 
 // Apply per-run (mixed-style) formatting via setRange* APIs. Every distinct
 // run font is resolved and loaded BEFORE any range setter runs (Figma requires
 // the font to be loaded before setRangeFontName). Each setter is guarded so a
 // single bad range never aborts the whole text node.
-export async function applyStyledTextSegments(node: TextNode, segments: any[]) {
+export async function applyStyledTextSegments(node: TextNode, segments: any[], rangeUnit?: string) {
     const charLength = node.characters.length;
-    segments = normalizeCompleteTextRanges(node.characters, segments);
+    if (rangeUnit !== "UTF16") segments = normalizeCompleteTextRanges(node.characters, segments);
 
     // Resolve + preload every distinct run font first.
     const resolvedByKey: { [key: string]: FontName | null } = {};
@@ -136,7 +137,22 @@ export async function applyInstanceTextFormatting(node: TextNode, data: any): Pr
         }
     }
     if (Array.isArray(data.styledTextSegments) && data.styledTextSegments.length > 0) {
-        await applyStyledTextSegments(node, data.styledTextSegments);
+        await applyStyledTextSegments(node, data.styledTextSegments, data.textRangeUnit);
+    }
+    applyTextListRanges(node, data.textListRanges);
+}
+
+export function applyTextListRanges(node: TextNode, ranges: any): void {
+    if (!Array.isArray(ranges)) return;
+    const length = node.characters.length;
+    for (const range of ranges) {
+        if (!range || !Number.isInteger(range.start) || !Number.isInteger(range.end) ||
+            range.start < 0 || range.end < range.start || range.end > length ||
+            ["ORDERED", "UNORDERED", "NONE"].indexOf(range.type) < 0) continue;
+        trySetRange(() => node.setRangeListOptions(range.start, range.end, { type: range.type }));
+        if (Number.isInteger(range.indentation) && range.indentation >= 0 && range.indentation <= 4) {
+            trySetRange(() => node.setRangeIndentation(range.start, range.end, range.indentation));
+        }
     }
 }
 

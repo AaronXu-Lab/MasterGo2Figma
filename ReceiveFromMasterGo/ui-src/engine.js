@@ -1,4 +1,5 @@
 import { prepareImageAssetBytes } from "./imageAssets.js";
+import { readZipDirectory } from "../../shared/zipArchive.js";
 
 // Framework-free import engine, ported verbatim from the old ui.template.html
 // inline script. Owns the package state (manifest/entries), the zip/.mg
@@ -924,55 +925,22 @@ function decodeUtf8(bytes) {
 
 async function readZipEntries(buffer) {
   const bytes = new Uint8Array(buffer);
-  const view = new DataView(buffer);
-  const eocdOffset = findEndOfCentralDirectory(view);
-  if (eocdOffset < 0) throw new Error("不是有效的 zip 文件");
-
-  const entryCount = view.getUint16(eocdOffset + 10, true);
-  const centralOffset = view.getUint32(eocdOffset + 16, true);
-  const result = {};
-  let offset = centralOffset;
-
-  for (let i = 0; i < entryCount; i++) {
-    if (view.getUint32(offset, true) !== 0x02014b50) throw new Error("zip 中央目录损坏");
-    const method = view.getUint16(offset + 10, true);
-    const compressedSize = view.getUint32(offset + 20, true);
-    const nameLength = view.getUint16(offset + 28, true);
-    const extraLength = view.getUint16(offset + 30, true);
-    const commentLength = view.getUint16(offset + 32, true);
-    const localOffset = view.getUint32(offset + 42, true);
-    const name = decodeUtf8(bytes.slice(offset + 46, offset + 46 + nameLength));
-
-    if (!name.endsWith("/")) {
-      result[name] = await readZipFileEntry(bytes, view, localOffset, method, compressedSize);
-    }
-
-    offset += 46 + nameLength + extraLength + commentLength;
+  const result = Object.create(null);
+  for (const entry of readZipDirectory(bytes)) {
+    if (!entry.name.endsWith("/")) result[entry.name] = await readZipFileEntry(bytes, entry);
   }
-
   return result;
 }
 
-async function readZipFileEntry(bytes, view, localOffset, method, compressedSize) {
-  if (view.getUint32(localOffset, true) !== 0x04034b50) throw new Error("zip 本地文件头损坏");
-
-  const nameLength = view.getUint16(localOffset + 26, true);
-  const extraLength = view.getUint16(localOffset + 28, true);
-  const dataStart = localOffset + 30 + nameLength + extraLength;
-  const compressed = bytes.subarray(dataStart, dataStart + compressedSize);
-
-  if (method === 0) return compressed;
-  if (method === 8 && typeof DecompressionStream === "function") {
+async function readZipFileEntry(bytes, entry) {
+  const compressed = bytes.subarray(entry.dataStart, entry.dataStart + entry.compressedSize);
+  if (entry.method === 0) return compressed;
+  if (entry.method === 8 && typeof DecompressionStream === "function") {
     const stream = new Blob([compressed]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
-    return new Uint8Array(await new Response(stream).arrayBuffer());
+    const content = new Uint8Array(await new Response(stream).arrayBuffer());
+    if (content.length !== entry.uncompressedSize) throw new Error("ZIP 解压后的文件尺寸不一致");
+    return content;
   }
 
   throw new Error("暂不支持此 zip 压缩方式，请使用 SendToFigma 导出的 zip");
-}
-
-function findEndOfCentralDirectory(view) {
-  for (let offset = view.byteLength - 22; offset >= 0; offset--) {
-    if (view.getUint32(offset, true) === 0x06054b50) return offset;
-  }
-  return -1;
 }

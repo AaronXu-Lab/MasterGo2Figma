@@ -6,6 +6,7 @@
   var __getOwnPropSymbols = Object.getOwnPropertySymbols;
   var __hasOwnProp = Object.prototype.hasOwnProperty;
   var __propIsEnum = Object.prototype.propertyIsEnumerable;
+  var __pow = Math.pow;
   var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
   var __spreadValues = (a, b) => {
     for (var prop in b || (b = {}))
@@ -460,6 +461,9 @@ ${style}`;
     "\u82F9\u65B9\u6FB3": "pingfangmo"
   };
   var FONT_STYLE_ALIASES = {
+    "\u5E38\u89C4": "regular",
+    "\u4E2D\u7B49": "medium",
+    "\u7C97\u4F53": "bold",
     "\u5E38\u89C4\u4F53": "regular",
     "\u4E2D\u9ED1\u4F53": "medium",
     "\u4E2D\u7C97\u4F53": "semibold",
@@ -592,15 +596,16 @@ ${style}`;
         node.lineHeight = data.lineHeight;
       });
       if (Array.isArray(data.styledTextSegments) && data.styledTextSegments.length > 0) {
-        yield applyStyledTextSegments(node, data.styledTextSegments);
+        yield applyStyledTextSegments(node, data.styledTextSegments, data.textRangeUnit);
       }
+      applyTextListRanges(node, data.textListRanges);
     });
   }
-  function applyStyledTextSegments(node, segments) {
+  function applyStyledTextSegments(node, segments, rangeUnit) {
     return __async(this, null, function* () {
       var _a, _b;
       const charLength = node.characters.length;
-      segments = normalizeCompleteTextRanges(node.characters, segments);
+      if (rangeUnit !== "UTF16") segments = normalizeCompleteTextRanges(node.characters, segments);
       const resolvedByKey = {};
       for (const segment of segments) {
         if (!segment || !segment.fontName) continue;
@@ -671,9 +676,21 @@ ${style}`;
         }
       }
       if (Array.isArray(data.styledTextSegments) && data.styledTextSegments.length > 0) {
-        yield applyStyledTextSegments(node, data.styledTextSegments);
+        yield applyStyledTextSegments(node, data.styledTextSegments, data.textRangeUnit);
       }
+      applyTextListRanges(node, data.textListRanges);
     });
+  }
+  function applyTextListRanges(node, ranges) {
+    if (!Array.isArray(ranges)) return;
+    const length = node.characters.length;
+    for (const range of ranges) {
+      if (!range || !Number.isInteger(range.start) || !Number.isInteger(range.end) || range.start < 0 || range.end < range.start || range.end > length || ["ORDERED", "UNORDERED", "NONE"].indexOf(range.type) < 0) continue;
+      trySetRange(() => node.setRangeListOptions(range.start, range.end, { type: range.type }));
+      if (Number.isInteger(range.indentation) && range.indentation >= 0 && range.indentation <= 4) {
+        trySetRange(() => node.setRangeIndentation(range.start, range.end, range.indentation));
+      }
+    }
   }
   function trySetRange(fn) {
     try {
@@ -1713,7 +1730,7 @@ ${style}`;
     const text = data == null ? void 0 : data.characters;
     const lineHeight = data == null ? void 0 : data.lineHeight;
     const segments = data == null ? void 0 : data.styledTextSegments;
-    if (typeof text !== "string" || !text.includes("\n") || text.includes("\r") || data.textAutoResize !== "WIDTH_AND_HEIGHT" || (lineHeight == null ? void 0 : lineHeight.unit) !== "PIXELS" || !(lineHeight.value > 0) || !Array.isArray(segments) || ((_a = data.blend) == null ? void 0 : _a.isMask) || !(((_b = data.layout) == null ? void 0 : _b.width) > 0) || (data.paragraphSpacing || 0) !== 0 || (data.paragraphIndent || 0) !== 0) return null;
+    if (typeof text !== "string" || !text.includes("\n") || text.includes("\r") || data.textAutoResize !== "WIDTH_AND_HEIGHT" || (lineHeight == null ? void 0 : lineHeight.unit) !== "PIXELS" || !(lineHeight.value > 0) || !Array.isArray(segments) || Array.isArray(data.textListRanges) && data.textListRanges.some((range) => (range == null ? void 0 : range.type) !== "NONE") || ((_a = data.blend) == null ? void 0 : _a.isMask) || !(((_b = data.layout) == null ? void 0 : _b.width) > 0) || (data.paragraphSpacing || 0) !== 0 || (data.paragraphIndent || 0) !== 0) return null;
     const lines = text.split("\n");
     if (lines.some((line) => !line) || Math.abs(((_c = data.layout) == null ? void 0 : _c.height) - lines.length * lineHeight.value) > 0.015 || !Number.isFinite((_d = data.layout) == null ? void 0 : _d.height)) return null;
     if (segments.some((segment) => segment.lineHeight && (segment.lineHeight.unit !== "PIXELS" || segment.lineHeight.value !== lineHeight.value))) return null;
@@ -2427,6 +2444,9 @@ ${style}`;
       if (data.blend) {
         safeSet(node, "opacity", (_c = data.blend.opacity) != null ? _c : 1);
         safeSet(node, "isMask", (_d = data.blend.isMask) != null ? _d : false);
+        if (["ALPHA", "VECTOR", "LUMINANCE"].indexOf(data.blend.maskType) >= 0) {
+          safeSet(node, "maskType", data.blend.maskType);
+        }
         safeSet(node, "blendMode", data.blend.blendMode || "NORMAL");
         if (data.blend.effects) {
           safeSetEffects(node, data.blend.effects);
@@ -2560,6 +2580,59 @@ ${style}`;
     if (geometry.strokeCap && !data.connectorFallbackPolyline && !hasVertexCaps) {
       safeSet(node, "strokeCap", normalizeMasterGoStrokeCapForFigma(geometry.strokeCap));
     }
+  }
+
+  // src/appliers/booleanContours.ts
+  var COINCIDENT_ENDPOINT_TOLERANCE = 1e-3;
+  function closeCoincidentBooleanContour(network) {
+    var _a, _b;
+    if (!network || !Array.isArray(network.vertices) || !Array.isArray(network.segments) || network.segments.length < 3 || ((_a = network.regions) == null ? void 0 : _a.length)) return network;
+    const vertices = network.vertices;
+    const segments = network.segments;
+    const edges = /* @__PURE__ */ new Map();
+    for (let i = 0; i < segments.length; i++) {
+      const segment = segments[i];
+      if (![segment.start, segment.end].every((index) => Number.isInteger(index) && index >= 0 && index < vertices.length) || segment.start === segment.end) return network;
+      for (const index of [segment.start, segment.end]) {
+        const vertex = vertices[index];
+        if (!Number.isFinite(vertex == null ? void 0 : vertex.x) || !Number.isFinite(vertex == null ? void 0 : vertex.y)) return network;
+        const incident = edges.get(index) || [];
+        incident.push(i);
+        if (incident.length > 2) return network;
+        edges.set(index, incident);
+      }
+    }
+    const ends = [...edges].filter(([, incident]) => incident.length === 1).map(([index]) => index);
+    if (ends.length !== 2) return network;
+    const first = vertices[ends[0]], last = vertices[ends[1]];
+    if (Math.hypot(first.x - last.x, first.y - last.y) > COINCIDENT_ENDPOINT_TOLERANCE) return network;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const index of edges.keys()) {
+      const vertex = vertices[index];
+      minX = Math.min(minX, vertex.x);
+      minY = Math.min(minY, vertex.y);
+      maxX = Math.max(maxX, vertex.x);
+      maxY = Math.max(maxY, vertex.y);
+    }
+    const width = maxX - minX, height = maxY - minY;
+    if (width * height <= __pow(COINCIDENT_ENDPOINT_TOLERANCE, 2)) return network;
+    const loop = [];
+    const visited = /* @__PURE__ */ new Set();
+    let current = ends[0];
+    while (true) {
+      const next = (_b = edges.get(current)) == null ? void 0 : _b.find((index) => !visited.has(index));
+      if (next === void 0) break;
+      visited.add(next);
+      loop.push(next);
+      const segment = segments[next];
+      current = segment.start === current ? segment.end : segment.start;
+    }
+    if (visited.size !== segments.length || current !== ends[1]) return network;
+    loop.push(segments.length);
+    return __spreadProps(__spreadValues({}, network), {
+      segments: [...segments, { start: ends[1], end: ends[0] }],
+      regions: [{ windingRule: "EVENODD", loops: [loop] }]
+    });
   }
 
   // src/appliers/container.ts
@@ -2833,6 +2906,17 @@ ${style}`;
       const parent = shell.parent;
       if (!parent || !("insertChild" in parent)) return null;
       const children = [...shell.children];
+      for (const child of children) {
+        if (child.type !== "VECTOR") continue;
+        const network = child.vectorNetwork;
+        const closed = closeCoincidentBooleanContour(network);
+        if (closed === network) continue;
+        try {
+          yield child.setVectorNetworkAsync(closed);
+        } catch (error) {
+          console.warn("Unable to close coincident boolean contour:", child.name, error);
+        }
+      }
       if (children.length === 1) {
         return yield promoteSingleBooleanChild(shell, children[0], data);
       }

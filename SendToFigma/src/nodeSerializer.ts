@@ -3,7 +3,7 @@ import { enrichImagePaintTruth } from "./imagePaintExporter";
 import { state } from "./state";
 import { safeRead, isOutOfMemoryError, describeError } from "../../shared/utils";
 import {
-    getUniversalProperty, readNodeProperty, cloneJsonCompatible,
+    getUniversalProperty, readNodeProperty, readMaskProperties, cloneJsonCompatible,
     getNodeProbe, overrideLayoutTransform,
     getResultArrayByThreePoints, isFiniteTransform
 } from "./serializers/universal";
@@ -59,7 +59,7 @@ export function createFallbackNodeJson(node: SceneNode, sourceType?: string) {
         },
         blend: {
             opacity: safeRead(() => (node as any).opacity, 1),
-            isMask: safeRead(() => (node as any).isMask, false),
+            ...readMaskProperties(node),
             blendMode: "NORMAL",
             effects: []
         },

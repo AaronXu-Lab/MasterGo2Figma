@@ -658,6 +658,12 @@
       return fallback;
     }
   }
+  function readMaskProperties(node) {
+    const isMask = readNodeProperty(node, "isMask", false) === true;
+    if (!isMask) return { isMask };
+    const outline = readNodeProperty(node, "isMaskOutline", void 0);
+    return typeof outline === "boolean" ? { isMask, maskType: outline ? "VECTOR" : "ALPHA" } : { isMask };
+  }
   function getNodeProbe(node) {
     if (!node) return { id: "", name: "", type: "NULL" };
     return {
@@ -1053,12 +1059,12 @@
         "visible": readNodeProperty(selection, "isVisible", true),
         "locked": readNodeProperty(selection, "isLocked", false)
       },
-      "blend": {
-        "opacity": readNodeProperty(selection, "opacity", 1),
-        "isMask": readNodeProperty(selection, "isMask", false) || false,
+      "blend": __spreadProps(__spreadValues({
+        "opacity": readNodeProperty(selection, "opacity", 1)
+      }, readMaskProperties(selection)), {
         "blendMode": processBlendMode(readNodeProperty(selection, "blendMode", "NORMAL")),
         "effects": effectsArray
-      },
+      }),
       "corner": {
         "topLeftRadius": fourCR.tl,
         "topRightRadius": fourCR.tr,
@@ -1613,6 +1619,54 @@
     return Object.assign(otherStruct, universalStruct);
   }
 
+  // src/serializers/textRanges.ts
+  var MASTERGO_ORDERED_LIST_MARKER = "\u{F0010}";
+  function readListRanges(entries, length) {
+    if (!Array.isArray(entries)) return [];
+    const result = [];
+    for (const entry of entries) {
+      if (!entry || !Number.isInteger(entry.start) || !Number.isInteger(entry.end) || entry.start < 0 || entry.end <= entry.start || entry.end > length || ["ORDERED", "BULLETED", "NONE"].indexOf(entry.type) < 0 || !Number.isInteger(entry.level) || entry.level < 0 || entry.level > 4) continue;
+      result.push({ start: entry.start, end: entry.end, type: entry.type, level: entry.level });
+    }
+    result.sort((a, b) => a.start - b.start);
+    for (let i = 1; i < result.length; i++) {
+      if (result[i].start < result[i - 1].end) return [];
+    }
+    return result;
+  }
+  function normalizeExportTextRanges(characters, segments, listStyles) {
+    const points = Array.from(characters);
+    const lists = readListRanges(listStyles, points.length);
+    const offsets = [0];
+    const kept = [];
+    let listIndex = 0;
+    let length = 0;
+    for (let i = 0; i < points.length; i++) {
+      while (listIndex < lists.length && lists[listIndex].end <= i) listIndex++;
+      const list = lists[listIndex];
+      const paragraphStart = i === 0 || /[\n\r\u2029]/.test(points[i - 1]);
+      const marker = paragraphStart && points[i] === MASTERGO_ORDERED_LIST_MARKER && list && list.type === "ORDERED" && list.start <= i && list.end > i;
+      if (!marker) {
+        kept.push(points[i]);
+        length += points[i].length;
+      }
+      offsets.push(length);
+    }
+    const styledTextSegments = segments == null ? void 0 : segments.map((segment) => __spreadProps(__spreadValues({}, segment), {
+      start: offsets[segment.start],
+      end: offsets[segment.end]
+    })).filter((segment) => segment.end > segment.start);
+    const textListRanges = lists.map((list) => ({
+      start: offsets[list.start],
+      end: offsets[list.end],
+      type: list.type === "BULLETED" ? "UNORDERED" : list.type,
+      indentation: list.level
+    }));
+    return __spreadValues(__spreadValues({
+      characters: kept.join("")
+    }, (styledTextSegments == null ? void 0 : styledTextSegments.length) ? { styledTextSegments, textRangeUnit: "UTF16" } : {}), textListRanges.length ? { textListRanges } : {});
+  }
+
   // src/serializers/text.ts
   var FONT_STYLE_NAME_MAP = {
     "SemiBold": "Semi Bold",
@@ -1646,7 +1700,7 @@
       start = range.start;
       end = range.start + range.length;
     }
-    if (start === void 0 || end === void 0) return null;
+    if (start === void 0 || end === void 0 || !Number.isFinite(start) || !Number.isFinite(end)) return null;
     start = Math.max(0, Math.floor(start));
     end = Math.min(charLength, Math.floor(end));
     if (!(end > start)) return null;
@@ -1692,14 +1746,16 @@
     const tempFontName = normalizeExportFontName(cloneJsonCompatible((_b = (_a = textStyles == null ? void 0 : textStyles[0]) == null ? void 0 : _a.textStyle) == null ? void 0 : _b.fontName, void 0));
     const style = ((_c = textStyles == null ? void 0 : textStyles[0]) == null ? void 0 : _c.textStyle) || {};
     const characters = readNodeProperty(selection, "characters", "");
-    const otherStruct = {
+    const segments = buildStyledTextSegments(textStyles, Array.from(characters).length);
+    const textRanges = normalizeExportTextRanges(characters, segments, readNodeProperty(selection, "listStyles", []));
+    const otherStruct = __spreadProps(__spreadValues({
       "textAlignHorizontal": readNodeProperty(selection, "textAlignHorizontal", "LEFT"),
       "textAlignVertical": readNodeProperty(selection, "textAlignVertical", "TOP"),
       "textAutoResize": readNodeProperty(selection, "textAutoResize", "NONE"),
       "paragraphIndent": 0,
       "paragraphSpacing": readNodeProperty(selection, "paragraphSpacing", 0),
-      "autoRename": false,
-      "characters": characters,
+      "autoRename": false
+    }, textRanges), {
       "fontSize": style.fontSize,
       "fontName": tempFontName,
       "fontWeight": style.fontWeight,
@@ -1707,9 +1763,7 @@
       "textDecoration": style.textDecoration,
       "letterSpacing": cloneJsonCompatible(style.letterSpacing, style.letterSpacing),
       "lineHeight": cloneJsonCompatible(style.lineHeight, style.lineHeight)
-    };
-    const styledTextSegments = buildStyledTextSegments(textStyles, typeof characters === "string" ? characters.length : 0);
-    if (styledTextSegments) otherStruct.styledTextSegments = styledTextSegments;
+    });
     return Object.assign(otherStruct, universalStruct);
   }
 
@@ -1905,12 +1959,12 @@
         visible: safeRead(() => node.isVisible, true),
         locked: safeRead(() => node.isLocked, false)
       },
-      blend: {
-        opacity: safeRead(() => node.opacity, 1),
-        isMask: safeRead(() => node.isMask, false),
+      blend: __spreadProps(__spreadValues({
+        opacity: safeRead(() => node.opacity, 1)
+      }, readMaskProperties(node)), {
         blendMode: "NORMAL",
         effects: []
-      },
+      }),
       corner: {
         topLeftRadius: 0,
         topRightRadius: 0,

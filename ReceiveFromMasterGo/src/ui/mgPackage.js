@@ -102,7 +102,21 @@
     // aspect. Reduces exactly to mgLinearGradientTransform when w == h or the
     // axis is axis-aligned.
     function mgLinearGradientTransformPx(p0, p1, w, h) {
-      if (!isFinite(w) || !isFinite(h) || w <= 0 || h <= 0) return null;
+      if (!isFinite(w) || !isFinite(h) || w < 0 || h < 0) return null;
+      // A true hairline stores one zero axis. Use the pixel-space limit on
+      // the remaining axis, preserving the perpendicular row; falling back
+      // to normalized-square math makes the decorative stroke disappear.
+      if (h === 0 && w > 0 && p1.x !== p0.x) {
+        const t = mgLinearGradientTransform(p0, p1);
+        t[0] = [1 / (p1.x - p0.x), 0, -p0.x / (p1.x - p0.x)];
+        return t;
+      }
+      if (w === 0 && h > 0 && p1.y !== p0.y) {
+        const t = mgLinearGradientTransform(p0, p1);
+        t[0] = [0, 1 / (p1.y - p0.y), -p0.y / (p1.y - p0.y)];
+        return t;
+      }
+      if (w === 0 || h === 0) return null;
       const dx = (p1.x - p0.x) * w, dy = (p1.y - p0.y) * h;
       const l2 = dx * dx + dy * dy;
       // Perp (v) row scale w·h·|p1−p0| matches the legacy normalized rotation
@@ -1066,6 +1080,7 @@
         let offY = (type === "DROP_SHADOW" || type === "INNER_SHADOW") ? 4 : 0;
         let spread = 0;
         let visible = true;
+        let blendMode = "PASS_THROUGH";
         let ok = true;
         while (p < end && ok) {
           const t = bytes[p];
@@ -1080,7 +1095,8 @@
             continue;
           }
           if (t === 0x06) { visible = bytes[p + 1] !== 0; p += 2; continue; }
-          if (t === 0x07 || t === 0x10) { p += 2; continue; }
+          if (t === 0x07) { blendMode = MG_BLEND_MODES[bytes[p + 1]] || "PASS_THROUGH"; p += 2; continue; }
+          if (t === 0x10) { p += 2; continue; }
           // 0909 effect field 16 carries a zero-compressed scalar; its
           // rendering meaning is unknown. Consume it without replacing radius 09.
           if (t === 0x09 || t === 0x0a || t === 0x0b || t === 0x0c || t === 0x0f || t === 0x16) {
@@ -1111,7 +1127,7 @@
               radius: radius,
               spread: spread,
               visible: visible,
-              blendMode: "PASS_THROUGH"
+              blendMode: blendMode
             };
         if (!effects[mk.parent]) effects[mk.parent] = [];
         effects[mk.parent].push({ code: mk.code, fx: fx });
@@ -1682,7 +1698,18 @@
       // spelling instead of legacy 1e=1. Other masks lack this pair. Do not
       // infer either field's standalone semantics or enable every new mask.
       return !!(trailer && (trailer.t1e === 1 ||
-        (trailer.t2f === 1 && trailer.t36 === 1)));
+        (trailer.t2f === 1 && (trailer.t36 === 1 || trailer.t36 === 3))));
+    }
+
+    function mgMaskType(trailer) {
+      // The newer mask trailer (37=3): the omitted/1/3 mode is an outline
+      // mask, while 36=2 is alpha. Restrict decoding to observed values;
+      // legacy records retain their existing behavior. The 1027 gradient
+      // outline masks and four painted white masks provide canvas evidence.
+      if (!trailer || trailer.t37 !== 3) return undefined;
+      if (trailer.t36 === 2) return "ALPHA";
+      if (trailer.t36 === undefined || trailer.t36 === 1 || trailer.t36 === 3) return "VECTOR";
+      return undefined;
     }
 
     // MasterGo blend-mode enum: the standard blend list without the LINEAR_*
@@ -2117,6 +2144,14 @@
     // Bold/SemiBold headers used to import as Regular. Text runs reference an
     // entry via their `03` id; the float values are FINAL (instance scale
     // already applied).
+    function mgIsFontName(value) {
+      // Native names are UTF-8, including symbol-prefixed families such as
+      // ★風雲. Keep a bounded name grammar so binary/control bytes, malformed
+      // UTF-8 and record/path separators cannot masquerade as font entries.
+      return !value.includes("\ufffd") &&
+        /^[\p{L}\p{N}\p{S}][\p{L}\p{N}\p{M}\p{S} .+_-]{0,95}$/u.test(value);
+    }
+
     function mgScanFontStyles(bytes, str) {
       const styles = {};
       const ID = "[0-9A-Za-z]+:[0-9A-Za-z]+(?:\\/[0-9A-Za-z]+:[0-9A-Za-z]+)*";
@@ -2164,7 +2199,7 @@
         // Legacy PostScript-family spellings can contain underscores
         // (HarmonyOS_Sans_SC). Preserve the name and all following metrics;
         // fontLoader resolves separator aliases against installed fonts.
-        if (family && !/^[A-Za-z\u3400-\u9fff][A-Za-z0-9\u3400-\u9fff .+_-]{0,60}$/.test(family)) continue;
+        if (family && !mgIsFontName(family)) continue;
         entry.psName = family; // legacy field name: full-export entries put the PostScript name here
         entry.family = family;
         p = q + 1;
@@ -2213,7 +2248,7 @@
               p = c.end + 1;
               continue;
             }
-            if (!/^[A-Za-z\u3400-\u9fff][A-Za-z0-9\u3400-\u9fff .+_-]{0,60}$/.test(c.text)) break;
+            if (!mgIsFontName(c.text)) break;
             if (tag === 0x0c) entry.psName = c.text;
             else entry.styleName = c.text;
             p = c.end + 1;
@@ -2278,9 +2313,15 @@
           const psStyle = entry.psName && entry.psName.lastIndexOf("-") > 0
             ? entry.psName.slice(entry.psName.lastIndexOf("-") + 1)
             : null;
-          const sameName = psStyle &&
-            psStyle.replace(/[\s_]/g, "").toLowerCase() === entry.styleName.replace(/[\s_]/g, "").toLowerCase();
-          if (sameName || !psStyle) {
+          const compact = value => String(value || "").replace(/[\s_]/g, "").toLowerCase();
+          const displayStyle = compact(entry.styleName);
+          // Style names may themselves contain a dash (Bold-Round), while
+          // a family-only PostScript name may contain several (HelloFont-ID-…).
+          // Compare the complete explicit style suffix before splitting it.
+          const sameName = entry.psName && compact(entry.psName).endsWith("-" + displayStyle);
+          const familyOnly = entry.family && compact(entry.psName).replace(/-/g, "") ===
+            compact(entry.family).replace(/-/g, "");
+          if (sameName || familyOnly || !psStyle) {
             return mgNormalizeFontName({ family: entry.family || entry.psName, style: entry.styleName });
           }
           // fall through to the psName branch below
@@ -2481,7 +2522,10 @@
           const local = fb + jt;
           if (bytes[local + 2] === 0x01 && bytes[local + 3] === 0x04) {
             // `01 04` introduces a PER-CORNER array of 4 zero-compressed
-            // floats [topLeft, topRight, bottomLeft, bottomRight] (临时测试:
+            // floats in clockwise order [topLeft, topRight, bottomRight,
+            // bottomLeft] (1027 asymmetric rectangles verify the lower pair).
+            // Historical symmetric fixtures did not distinguish the order.
+            // (临时测试:
             // [0,0,4,4] tab-card caps, [4,4,0,0] photo tops). The old
             // single-raw-float read only survived uniform rectangles — a
             // zero-compressed first corner (`00`) landed it mid-payload and
@@ -3176,7 +3220,7 @@
             const mixed = r.some(v => Math.abs(v - r[0]) > 1e-6);
             return {
               topLeftRadius: r[0], topRightRadius: r[1],
-              bottomLeftRadius: r[2], bottomRightRadius: r[3],
+              bottomLeftRadius: r[3], bottomRightRadius: r[2],
               cornerRadius: mixed ? -1 : r[0], cornerSmoothing: cs
             };
           }
@@ -3200,6 +3244,8 @@
           layoutAlign: "INHERIT", layoutGrow: 0, layoutPositioning: "AUTO"
         }
       };
+      const maskType = n.isMask && mgMaskType(Object.assign({}, inheritedTrailer, trailer));
+      if (maskType) props.blend.maskType = maskType;
       const minWidth = trailer.minWidth !== undefined ? trailer.minWidth : inheritedTrailer.minWidth;
       if (typeof minWidth === "number" && minWidth >= 0) props.layout.minWidth = minWidth * scale;
       // Trailer `2e 01` = the node ignores its auto-layout parent (own-record
@@ -5515,9 +5561,11 @@
       parseEmptyText: mgParseEmptyText,
       scanPaints: mgScanPaints,
       scanFontStyles: mgScanFontStyles,
+      fontNameFromStyleEntry: mgFontNameFromStyleEntry,
       scanEffects: mgScanEffects,
       lineHeightFromStyleEntry: mgLineHeightFromStyleEntry,
       maskRendersFill: mgMaskRendersFill,
+      maskType: mgMaskType,
       scanStyleDefs: mgScanStyleDefs,
       slimInstanceDescendantProps: mgSlimInstanceDescendantProps,
       markStructuralInstanceFallbacks: mgMarkStructuralInstanceFallbacks,

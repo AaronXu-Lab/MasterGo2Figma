@@ -28,6 +28,17 @@ export function readNodeProperty<T>(node: any, property: string, fallback: T): T
     }
 }
 
+export function readMaskProperties(node: any): { isMask: boolean; maskType?: "VECTOR" | "ALPHA" } {
+    const isMask = readNodeProperty<boolean>(node, "isMask", false) === true;
+    if (!isMask) return { isMask };
+    // Older hosts may omit this getter. Missing is not the same as false:
+    // only an explicit false identifies an alpha mask.
+    const outline = readNodeProperty<boolean | undefined>(node, "isMaskOutline", undefined);
+    return typeof outline === "boolean"
+        ? { isMask, maskType: outline ? "VECTOR" : "ALPHA" }
+        : { isMask };
+}
+
 export function getNodeProbe(node: any): any {
     if (!node) return { id: "", name: "", type: "NULL" };
     return {
@@ -543,7 +554,7 @@ export function getUniversalProperty(selection: any, sourceType?: string, restor
         },
         "blend": {
             "opacity": readNodeProperty(selection, "opacity", 1),
-            "isMask": readNodeProperty(selection, "isMask", false) || false,
+            ...readMaskProperties(selection),
             "blendMode": processBlendMode(readNodeProperty(selection, "blendMode", "NORMAL")),
             "effects": effectsArray
         },

@@ -1,4 +1,5 @@
 import { getUniversalProperty, readNodeProperty, cloneJsonCompatible, fillsAndStrokes2Json } from "./universal";
+import { normalizeExportTextRanges } from "./textRanges";
 
 // MasterGo uses concatenated style names that Figma registers with spaces.
 // Mapping covers the most common variants; extend as needed.
@@ -24,12 +25,9 @@ export function normalizeExportFontName(fontName: any): any {
         : { family, style };
 }
 
-// Parse a [start, end) character range from a textStyles[] entry. MasterGo's
-// exact field naming is host-defined, so we accept the common shapes and bail
-// (return null) when none is recognized — callers then skip the segment, which
-// keeps single-style/unknown-shape exports byte-identical to the previous
-// behavior. NOTE: confirm the real shape against a live MasterGo mixed-style
-// text node before relying on per-run fidelity.
+// The public TextSegStyle uses [start, end) Unicode code-point indices.
+// Retain the older accepted field aliases; convert to Figma offsets only
+// after list markers and their positions have been accounted for.
 export function parseTextStyleRange(entry: any, charLength: number): { start: number; end: number } | null {
     if (!entry || typeof entry !== "object") return null;
 
@@ -48,7 +46,7 @@ export function parseTextStyleRange(entry: any, charLength: number): { start: nu
         end = range.start + range.length;
     }
 
-    if (start === undefined || end === undefined) return null;
+    if (start === undefined || end === undefined || !Number.isFinite(start) || !Number.isFinite(end)) return null;
     start = Math.max(0, Math.floor(start));
     end = Math.min(charLength, Math.floor(end));
     if (!(end > start)) return null;
@@ -108,6 +106,8 @@ export function transTextNode(selection: any) {
 
     const style = textStyles?.[0]?.textStyle || {};
     const characters = readNodeProperty(selection, "characters", "");
+    const segments = buildStyledTextSegments(textStyles, Array.from(characters).length);
+    const textRanges = normalizeExportTextRanges(characters, segments, readNodeProperty(selection, "listStyles", []));
 
     const otherStruct: any = {
         "textAlignHorizontal": readNodeProperty(selection, "textAlignHorizontal", "LEFT"),
@@ -116,7 +116,7 @@ export function transTextNode(selection: any) {
         "paragraphIndent": 0,
         "paragraphSpacing": readNodeProperty(selection, "paragraphSpacing", 0),
         "autoRename": false,
-        "characters": characters,
+        ...textRanges,
         "fontSize": style.fontSize,
         "fontName": tempFontName,
         "fontWeight": style.fontWeight,
@@ -125,9 +125,6 @@ export function transTextNode(selection: any) {
         "letterSpacing": cloneJsonCompatible(style.letterSpacing, style.letterSpacing),
         "lineHeight": cloneJsonCompatible(style.lineHeight, style.lineHeight),
     };
-
-    const styledTextSegments = buildStyledTextSegments(textStyles, typeof characters === "string" ? characters.length : 0);
-    if (styledTextSegments) otherStruct.styledTextSegments = styledTextSegments;
 
     return Object.assign(otherStruct, universalStruct);
 }

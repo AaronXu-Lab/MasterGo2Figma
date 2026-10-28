@@ -37,3 +37,15 @@ test('localized PingFang names resolve the same installed face without crossing 
   assert.deepEqual(resolveAvailableFontName({ family: 'PingFang SC', style: 'Pingfang sc regular' }), { family: 'PingFang SC', style: 'Regular' });
   assert.equal(resolveAvailableFontName({ family: 'PingFang SC', style: 'Bold' }), null);
 });
+
+test('MasterGo short Chinese style names resolve installed faces and preserve missing weights', () => {
+  state.documentFonts = ['Regular', 'Medium', 'Bold'].map(style => ({fontName: {family: 'PingFang SC', style}}));
+  rebuildAvailableFontIndex();
+  for (const [localized, style] of [['常规', 'Regular'], ['中等', 'Medium'], ['粗体', 'Bold']]) {
+    assert.deepEqual(resolveAvailableFontName({family: 'PingFang SC', style: localized}), {family: 'PingFang SC', style});
+  }
+  state.documentFonts = [{fontName: {family: 'PingFang SC', style: 'Semibold'}}];
+  rebuildAvailableFontIndex();
+  assert.equal(resolveAvailableFontName({family: 'PingFang SC', style: '粗体'}), null);
+  assert.equal(resolveAvailableFontName({family: 'Unavailable Family', style: '常规'}), null);
+});

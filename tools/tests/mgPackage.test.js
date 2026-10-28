@@ -426,6 +426,31 @@ test("mixed font runs retain order and style refs across explicit run flags", ()
   assert.deepEqual(parsed.runs.map(r=>[r.text,r.styleRef,r.start,r.end]),[['Body','1:1',0,4],['Cost','1:2',4,8]]);
 });
 
+test("symbol-prefixed native font entries retain their metrics", () => {
+  const bytes = Buffer.concat([
+    Buffer.from('\x019:1\0\x05\x03\x03★風雲\0', 'utf8'),
+    Buffer.from([4, 0x85, 0, 0, 0x68]), // 90px, not the 22px box fallback
+    Buffer.from('\x0cFengYun-Regular\0\x0e\0\x0fEMPTYHASHFFFFFFF\0\x12{"fontStyle":"Regular","opsz":"auto"}\0\0')
+  ]);
+  const entry = __test.scanFontStyles(bytes, bytes.toString('latin1'))['9:1'];
+  assert.equal(entry.family, '★風雲');
+  assert.equal(entry.fontSize, 90);
+  assert.deepEqual(__test.fontNameFromStyleEntry(entry), {family:'★風雲',style:'Regular'});
+  for (const name of ['Invalid/Family', 'Bad\\Family', 'Bad\x01Family', '\ufffdFont']) {
+    const bad = Buffer.from('\x019:2\0\x05\x03\x03'+name+'\0\0', 'utf8');
+    assert.equal(__test.scanFontStyles(bad,bad.toString('latin1'))['9:2'],undefined);
+  }
+});
+
+test("explicit font styles preserve hyphenated faces and family-only PostScript names", () => {
+  for (const style of ['Bold-Round','Medium-Round']) {
+    assert.deepEqual(__test.fontNameFromStyleEntry({family:'Alimama FangYuanTi VF',psName:'AlimamaFangYuanTiVF-'+style,styleName:style,styleNameVerbatim:true}),{family:'Alimama FangYuanTi VF',style});
+  }
+  assert.deepEqual(__test.fontNameFromStyleEntry({family:'HelloFont ID XuanZhenSong',psName:'HelloFont-ID-XuanZhenSong',styleName:'Regular',styleNameVerbatim:true}),{family:'HelloFont ID XuanZhenSong',style:'Regular'});
+  // A localized display alias must still defer to a genuine PS style.
+  assert.deepEqual(__test.fontNameFromStyleEntry({family:'PingFang SC',psName:'PingFangSC-Medium',styleName:'中黑体',styleNameVerbatim:true}),{family:'PingFang SC',style:'Medium'});
+});
+
 
 test("solid alpha survives default paint opacity without multiplying duplicate spellings", () => {
   const head = Buffer.from("\x011:2\0\x021:1\0\x03a0\0", "binary");
@@ -527,6 +552,38 @@ test('painted masks accept the paired newer flags without enabling shape-only ma
   for (const trailer of [null,{}, {t2f:1}, {t36:1}, {t2f:0,t36:1}]) {
     assert.equal(__test.maskRendersFill(trailer), false);
   }
+});
+
+test('new outline mask modes preserve coverage and painted-mask participation', () => {
+  assert.equal(__test.maskType({t37:3}), 'VECTOR');
+  assert.equal(__test.maskType({t37:3,t36:1}), 'VECTOR');
+  assert.equal(__test.maskType({t37:3,t36:3}), 'VECTOR');
+  assert.equal(__test.maskType({t37:3,t36:2}), 'ALPHA');
+  assert.equal(__test.maskType({t37:3,t36:4}), undefined);
+  assert.equal(__test.maskType({t37:1}), undefined);
+  assert.equal(__test.maskRendersFill({t2f:1,t36:3,t37:3}),true);
+  assert.equal(__test.maskRendersFill({t2f:1,t36:2,t37:3}),false);
+  assert.equal(__test.maskRendersFill({t27:0,t2f:1,t36:3,t37:3}),false);
+});
+
+test('shadow records preserve explicit blend modes instead of dropping field 07', () => {
+  for (const mode of [0,2,5]) {
+    const bytes=Buffer.concat([Buffer.from('\x019:2\0\x029:1\0\x03a0\0\x05\x01'),Buffer.from([7,mode,0])]);
+    assert.equal(__test.scanEffects(bytes,bytes.toString('latin1'))['9:1'][0].blendMode,['NORMAL','DARKEN','MULTIPLY','COLOR_BURN','LIGHTEN','SCREEN'][mode]);
+  }
+});
+
+test('zero-height gradient strokes use the nondegenerate pixel-axis limit', () => {
+  const p0={x:0.9536830186843872,y:-36.67091751098633},p1={x:0.5,y:1};
+  const paint=()=>({type:'GRADIENT_LINEAR',gradientTransform:[[0,0,0],[-0.999927487,-0.012042449,1.012006193]],__mgLinearMeta:{p0,p1}});
+  const horizontal=paint();__test.finalizeRadialPaints([horizontal],42,0);
+  assert.ok(Math.abs(horizontal.gradientTransform[0][0]-(-2.203975297))<0.001);
+  assert.equal(horizontal.gradientTransform[0][1],0);
+  assert.ok(Math.abs(horizontal.gradientTransform[0][2]-2.101985158)<0.001);
+  const vertical=paint();__test.finalizeRadialPaints([vertical],0,42);
+  assert.deepEqual(vertical.gradientTransform[0],[0,1/(p1.y-p0.y),-p0.y/(p1.y-p0.y)]);
+  const absent=paint();__test.finalizeRadialPaints([absent],0,0);
+  assert.deepEqual(absent.gradientTransform,[[0,0,0],[-0.999927487,-0.012042449,1.012006193]]);
 });
 
 
@@ -835,6 +892,15 @@ test('native container corner bytes use clockwise order, including explicit zero
     const c = props.corner;
     assert.deepEqual([c.topLeftRadius, c.topRightRadius, c.bottomLeftRadius, c.bottomRightRadius], expected);
     assert.equal(c.cornerRadius, expected.every(v => v === expected[0]) ? expected[0] : -1);
+  }
+});
+
+test('native rectangle corner arrays also use clockwise lower-corner order', () => {
+  for (const radii of [[43,0,0,43],[28,0,28,0],[1,2,3,4]]) {
+    const bytes=Buffer.concat([Buffer.from('\x019:1\0\x03a0\0\x04Rect\0\x1c\x03\x01\x04'),Buffer.from(radii.flatMap(value=>value===0?[0]:twist(value))),Buffer.from([0,0])]);
+    const {nodes}=__test.decodeNativeNodes(bytes);
+    const c=__test.nativeProps(nodes['9:1'],nodes,{},{},{},{},{}).corner;
+    assert.deepEqual([c.topLeftRadius,c.topRightRadius,c.bottomLeftRadius,c.bottomRightRadius],[radii[0],radii[1],radii[3],radii[2]]);
   }
 });
 

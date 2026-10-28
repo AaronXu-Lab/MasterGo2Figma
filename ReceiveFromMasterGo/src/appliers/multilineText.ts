@@ -8,6 +8,7 @@ export function getFixedMixedTextLines(data: any): any[] | null {
   if (typeof text !== 'string' || !text.includes('\n') || text.includes('\r') ||
       data.textAutoResize !== 'WIDTH_AND_HEIGHT' || lineHeight?.unit !== 'PIXELS' ||
       !(lineHeight.value > 0) || !Array.isArray(segments) ||
+      (Array.isArray(data.textListRanges) && data.textListRanges.some((range: any) => range?.type !== 'NONE')) ||
       data.blend?.isMask || !(data.layout?.width > 0) ||
       (data.paragraphSpacing || 0) !== 0 || (data.paragraphIndent || 0) !== 0) return null;
   const lines = text.split('\n');

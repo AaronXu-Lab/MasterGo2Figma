@@ -3,6 +3,15 @@ export type ExportTransferMode = "direct-zip" | "local-json-stream";
 export type ExportTransferTarget = "zip" | "local-relay";
 export type ExportTransferFileKind = "content" | "bytes";
 
+// v2 textListRanges and newly exported styledTextSegments use UTF-16 offsets,
+// after removing a verified MasterGo list marker. Old packages omit the unit.
+export type ImportTextListRange = {
+    start: number;
+    end: number;
+    type: "ORDERED" | "UNORDERED" | "NONE";
+    indentation: number;
+};
+
 export type ExportOptions = {
     scope: ExportScope;
     pageIds: string[];
