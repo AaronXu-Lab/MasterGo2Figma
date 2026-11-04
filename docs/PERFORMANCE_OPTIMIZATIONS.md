@@ -141,3 +141,16 @@
 3. 含缺失字体 + 多样式文本的页面（覆盖 B1 字体记忆化）。
 4. 含 Group / Boolean Operation / SPACE_BETWEEN 自动布局的页面（覆盖 B4、B6）。
 5. 若有 `.mg` 样例，跑一次 `node tools/compare_mg_import.js` 做兜底比对。
+
+## 2026-11-04：大文件校验摘要改为增量计算
+
+`ReceiveFromMasterGo/src/ui/packageValidation.js` 原先复制全部 canonical records，再用 `stableJson()` 拼接整个文档后编码、计算 FNV-1a 摘要。「放风宝.mg」原始 ZIP 完整性检查和 MG 转换通过，但校验阶段在 `Array.join()` 触发 `RangeError: Invalid string length`。
+
+改为按原有键排序和页面／深度优先图层顺序，逐个 JSON token 更新摘要；常规 token 使用 16 Ki 字符缓冲，超过缓冲的单个 scalar token 单独编码，token 之间刷新不会切断 Unicode 代理对。图片引用仍按图片内容摘要归一化。移除全量 canonical 对象副本和整文档字符串，使用显式栈遍历图层；结构、引用、数量和资源校验保持不变，摘要算法和字节顺序兼容旧实现。
+
+本轮本地 Node 验证：
+
+- 原文件按插件参数 `slimInstanceDescendants: true` 转换并校验成功：2 页、335,599 条记录、97 个图片资源，零校验错误和警告；摘要 `fnv1a32:c0344f1f`。
+- 本次转换约 17.8 秒，校验约 13.4 秒；不是 Figma 内耗时或受控性能对比。
+- 199 项自动化测试通过，包括旧摘要字节兼容（Unicode、转义、树顺序）和编码分段回归；两端构建通过。
+- 未修改原生 MG 解码逻辑；未执行此次修复后的 Figma 画布导入验证。解码与校验仍为同步工作，且仍保留原始 entries 和结构检查所需 records；本修复不代表端到端流式解析或消除所有大文件内存风险。

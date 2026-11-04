@@ -17,23 +17,55 @@
     return hash.toString(16).padStart(8, "0");
   }
 
-  function stableJson(value) {
-    if (Array.isArray(value)) return "[" + value.map(stableJson).join(",") + "]";
-    if (!value || typeof value !== "object") return JSON.stringify(value);
-    return "{" + Object.keys(value).sort().map(key => JSON.stringify(key) + ":" + stableJson(value[key])).join(",") + "}";
-  }
-
-  function canonicalValue(value, assetDigestByAlias, key) {
-    if (key === "imageRef" && typeof value === "string" && assetDigestByAlias[value]) {
-      return assetDigestByAlias[value];
+  // Keep UTF-8 encoding bounded even when the canonical document exceeds
+  // the engine's maximum string length. Flush only between JSON tokens, so
+  // surrogate pairs inside a string are never split across encoder calls.
+  function createCanonicalHasher(assetDigestByAlias) {
+    const encoder = new TextEncoder();
+    const BUFFER_CHARS = 16 * 1024;
+    let hash = 0x811c9dc5;
+    let buffer = "";
+    function flush() {
+      const bytes = encoder.encode(buffer);
+      for (let i = 0; i < bytes.length; i++) {
+        hash ^= bytes[i];
+        hash = Math.imul(hash, 0x01000193) >>> 0;
+      }
+      buffer = "";
     }
-    if (Array.isArray(value)) return value.map(item => canonicalValue(item, assetDigestByAlias, ""));
-    if (!value || typeof value !== "object") return value;
-    const result = {};
-    for (const childKey of Object.keys(value)) {
-      result[childKey] = canonicalValue(value[childKey], assetDigestByAlias, childKey);
+    function write(token) {
+      if (buffer.length + token.length > BUFFER_CHARS) flush();
+      buffer += token;
+      if (buffer.length >= BUFFER_CHARS) flush();
     }
-    return result;
+    function value(item, key) {
+      if (key === "imageRef" && typeof item === "string" && assetDigestByAlias[item]) {
+        item = assetDigestByAlias[item];
+      }
+      if (Array.isArray(item)) {
+        write("[");
+        for (let i = 0; i < item.length; i++) {
+          if (i) write(",");
+          value(item[i], "");
+        }
+        write("]");
+      } else if (item && typeof item === "object") {
+        write("{");
+        const keys = Object.keys(item).sort();
+        for (let i = 0; i < keys.length; i++) {
+          if (i) write(",");
+          write(JSON.stringify(keys[i]) + ":");
+          value(item[keys[i]], keys[i]);
+        }
+        write("}");
+      } else {
+        write(JSON.stringify(item));
+      }
+    }
+    return { write, value, finish() {
+      flush();
+      return "fnv1a32:" + hash.toString(16).padStart(8, "0");
+    } };
   }
 
   function canonicalDigest(entries, manifest, pageIndexes, records) {
@@ -49,34 +81,48 @@
       assetDigests.push(digest);
     }
 
-    const pages = pageIndexes.map(page => {
-      const orderedRecords = [];
+    const hasher = createCanonicalHasher(assetDigestByAlias);
+    // Preserve the old stableJson key order and depth-first record order,
+    // without duplicating all records or building a document-sized string.
+    hasher.write('{"assetContentDigests":');
+    hasher.value(assetDigests.sort());
+    hasher.write(',"documentId":');
+    hasher.value(manifest.documentId === undefined ? null : manifest.documentId);
+    hasher.write(',"pages":[');
+    for (let pi = 0; pi < pageIndexes.length; pi++) {
+      const page = pageIndexes[pi];
+      if (pi) hasher.write(",");
+      hasher.write('{"id":');
+      hasher.value(page.manifest.id);
+      hasher.write(',"name":');
+      hasher.value(page.manifest.name || "");
+      hasher.write(',"records":[');
       const seen = new Set();
-      const visit = id => {
-        if (seen.has(id)) return;
+      const stack = page.index.rootNodeIds.slice().reverse();
+      let first = true;
+      while (stack.length) {
+        const id = stack.pop();
+        if (seen.has(id)) continue;
         seen.add(id);
         const item = records.get(id);
-        if (!item) return;
-        orderedRecords.push(canonicalValue(item.record, assetDigestByAlias, ""));
-        for (const childId of item.record.childIds) visit(childId);
-      };
-      for (const rootId of page.index.rootNodeIds) visit(rootId);
-      return {
-        id: page.manifest.id,
-        name: page.manifest.name || "",
-        rootNodeIds: page.index.rootNodeIds.slice(),
-        records: orderedRecords
-      };
-    });
-    const canonical = {
-      schema: manifest.schema,
-      version: manifest.version,
-      documentId: manifest.documentId === undefined ? null : manifest.documentId,
-      scope: manifest.scope || "",
-      pages: pages,
-      assetContentDigests: assetDigests.sort()
-    };
-    return "fnv1a32:" + fnv1a32Bytes(new TextEncoder().encode(stableJson(canonical)));
+        if (!item) continue;
+        if (!first) hasher.write(",");
+        first = false;
+        hasher.value(item.record);
+        for (let i = item.record.childIds.length - 1; i >= 0; i--) stack.push(item.record.childIds[i]);
+      }
+      hasher.write('],"rootNodeIds":');
+      hasher.value(page.index.rootNodeIds);
+      hasher.write("}");
+    }
+    hasher.write('],"schema":');
+    hasher.value(manifest.schema);
+    hasher.write(',"scope":');
+    hasher.value(manifest.scope || "");
+    hasher.write(',"version":');
+    hasher.value(manifest.version);
+    hasher.write("}");
+    return hasher.finish();
   }
 
   // Validate a decoded v2 package without retaining layer chunks. This is used

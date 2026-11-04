@@ -2,9 +2,7 @@ import * as React from "react"
 import {
   AlertCircle,
   CheckCircle2,
-  ChevronDown,
   ChevronLeft,
-  ChevronRight,
   FileArchive,
   FileUp,
   Loader2,
@@ -97,7 +95,6 @@ export function App() {
   })
   const [result, setResult] = React.useState<ResultState | null>(null)
   const [error, setError] = React.useState<ErrorState | null>(null)
-  const [showDetails, setShowDetails] = React.useState(false)
   const [fontBusy, setFontBusy] = React.useState(false)
   const [fontMsg, setFontMsg] = React.useState<string | null>(null)
 
@@ -118,7 +115,6 @@ export function App() {
       },
       onComplete: (r: ResultState) => {
         setResult(r)
-        setShowDetails(false)
         setView("success")
       },
       onImportError: (message: string) => failImport(message),
@@ -142,7 +138,6 @@ export function App() {
       pagesDone: pagesDoneRef.current,
       pagesTotal: pagesTotalRef.current,
     })
-    setShowDetails(false)
     setView("error")
   }
 
@@ -165,6 +160,10 @@ export function App() {
   async function parseFiles(files: File[]) {
     setParsing(true)
     setDropHint(null)
+    // Let React paint and the compositor start the spinner before decoding.
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => window.setTimeout(resolve, 0))
+    })
     try {
       const info = (await engine.parseFiles(files)) as FileInfo
       setFileInfo(info)
@@ -172,7 +171,6 @@ export function App() {
       setView("parsed")
     } catch (e: any) {
       setError({ kind: "read", message: String((e && e.message) || e), pagesDone: 0, pagesTotal: 0 })
-      setShowDetails(false)
       setView("error")
     } finally {
       setParsing(false)
@@ -186,7 +184,6 @@ export function App() {
     setResult(null)
     setError(null)
     setDropHint(null)
-    setShowDetails(false)
     setView("idle")
   }
 
@@ -296,8 +293,6 @@ export function App() {
             {fileInfo && error.kind === "import" && <FileRow fileInfo={fileInfo} />}
             <ErrorView
               error={error}
-              showDetails={showDetails}
-              onToggleDetails={() => setShowDetails((v) => !v)}
               onRestart={resetToIdle}
             />
           </>
@@ -390,7 +385,7 @@ function IdleView(props: {
       >
         {parsing ? (
           <>
-            <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+            <LoadingSpinner />
             <div className="text-sm font-medium">正在解析文件…</div>
           </>
         ) : (
@@ -501,6 +496,16 @@ function ParsedView(props: {
   )
 }
 
+// Animate an HTML layer, keeping the SVG static inside it so rotation can
+// run on the compositor while synchronous package work occupies the UI thread.
+function LoadingSpinner() {
+  return (
+    <span aria-hidden="true" className="block h-8 w-8 shrink-0 animate-spin text-muted-foreground [will-change:transform]">
+      <Loader2 className="block h-8 w-8" />
+    </span>
+  )
+}
+
 function ImportingView({ progress }: { progress: ProgressState }) {
   const statusLine = (() => {
     if (progress.stage === "assets") return "正在打包图片"
@@ -514,7 +519,7 @@ function ImportingView({ progress }: { progress: ProgressState }) {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-4 rounded-lg border px-8">
-      <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      <LoadingSpinner />
       <div className="w-full truncate text-center text-sm font-medium" title={statusLine}>
         {statusLine}
       </div>
@@ -559,11 +564,9 @@ function ResultView(props: {
 
 function ErrorView(props: {
   error: ErrorState
-  showDetails: boolean
-  onToggleDetails: () => void
   onRestart: () => void
 }) {
-  const { error, showDetails, onToggleDetails, onRestart } = props
+  const { error, onRestart } = props
   const isRead = error.kind === "read"
   return (
     <>
@@ -576,15 +579,14 @@ function ErrorView(props: {
           {isRead ? "文件可能已损坏或格式不受支持" : "可重新导入，已导入的页面不受影响"}
         </div>
         <div className="text-xs text-muted-foreground">
-          <button className="inline-flex items-center gap-0.5 hover:text-foreground" onClick={onToggleDetails}>
-            {showDetails ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-            查看详情
-          </button>
-          {showDetails && (
-            <div className="mt-1.5 max-h-24 overflow-y-auto whitespace-pre-wrap break-all rounded-md bg-muted p-2 text-left">
-              {error.message}
-            </div>
-          )}
+          可以将错误的 mg 文件发送至
+          <a className="underline underline-offset-2 hover:text-foreground" href={`mailto:${CONTACT_EMAIL}`}>
+            作者邮箱
+          </a>
+          来帮助作者迭代插件
+        </div>
+        <div className="mt-3 max-h-24 max-w-full shrink-0 overflow-y-auto whitespace-pre-wrap break-all rounded-md bg-muted p-2 text-left text-xs text-muted-foreground">
+          {error.message}
         </div>
       </div>
       <Button className="w-full" onClick={onRestart}>

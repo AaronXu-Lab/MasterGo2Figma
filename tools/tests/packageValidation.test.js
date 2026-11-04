@@ -59,3 +59,54 @@ test("canonical digest ignores timestamps, chunk paths, and asset aliases", () =
   assert.equal(second.ok, true);
   assert.equal(first.canonicalDigest, second.canonicalDigest);
 });
+
+function legacyDigest(value) {
+  function stable(item) {
+    if (Array.isArray(item)) return '[' + item.map(stable).join(',') + ']';
+    if (!item || typeof item !== 'object') return JSON.stringify(item);
+    return '{' + Object.keys(item).sort().map(key => JSON.stringify(key) + ':' + stable(item[key])).join(',') + '}';
+  }
+  let hash = 0x811c9dc5;
+  for (const byte of new TextEncoder().encode(stable(value))) {
+    hash = Math.imul(hash ^ byte, 0x01000193) >>> 0;
+  }
+  return 'fnv1a32:' + hash.toString(16).padStart(8, '0');
+}
+
+test('incremental digest matches legacy bytes with Unicode, nested props and tree order', () => {
+  const root = { id: 'root', parentId: null, index: 0, childIds: ['a', 'b'], props: { z: null, a: ['中文😀', '\ud800', '\"\\\n', false, 1.25] } };
+  const a = { id: 'a', parentId: 'root', index: 0, childIds: [], props: { text: 'x'.repeat(16380) + '😀尾' } };
+  const b = { id: 'b', parentId: 'root', index: 1, childIds: [], props: {} };
+  const result = validateV2Package(fixture([b, root, a]));
+  assert.equal(result.ok, true);
+  assert.equal(result.canonicalDigest, legacyDigest({
+    schema: 'mastergo2figma.package.v2', version: 2, documentId: null, scope: '',
+    pages: [{ id: 'p', name: '', rootNodeIds: ['root'], records: [root, a, b] }],
+    assetContentDigests: []
+  }));
+});
+
+test('digest encodes bounded pieces rather than concatenating the whole package', () => {
+  const fs = require('node:fs');
+  const vm = require('node:vm');
+  let maxEncodedLength = 0;
+  class BoundedEncoder extends TextEncoder {
+    encode(value) {
+      maxEncodedLength = Math.max(maxEncodedLength, value.length);
+      assert.ok(value.length <= 16 * 1024, 'document-sized encoding allocation');
+      return super.encode(value);
+    }
+  }
+  const sandbox = { TextDecoder, TextEncoder: BoundedEncoder, module: { exports: {} } };
+  vm.runInNewContext(fs.readFileSync(require.resolve('../../ReceiveFromMasterGo/src/ui/packageValidation.js'), 'utf8'), sandbox);
+  const records = [{ id: 'root', parentId: null, childIds: [], props: {} }];
+  for (let i = 0; i < 300; i++) {
+    records[0].childIds.push('child' + i);
+    records.push({ id: 'child' + i, parentId: 'root', index: i, childIds: [], props: { text: '中文😀'.repeat(200) } });
+  }
+  const entries = fixture(records);
+  const result = sandbox.module.exports.validateV2Package(entries);
+  assert.equal(result.ok, true);
+  assert.equal(result.canonicalDigest, validateV2Package(entries).canonicalDigest);
+  assert.ok(maxEncodedLength > 0);
+});
