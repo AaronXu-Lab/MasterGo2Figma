@@ -1,14 +1,17 @@
 import { normalizeVectorWindingRule, stripVectorNetworkVertexExtras } from "../../../shared/vectorUtils";
 import { normalizeConnectorVectorStrokeCap } from "../../../shared/connectorUtils";
+import { createRingCapGeometry, queueVectorRings } from "./vectorRings";
 
 export function normalizeVectorStrokeCap(value: any): string {
     return normalizeConnectorVectorStrokeCap(value);
 }
 
 export async function applyVectorNetwork(node: VectorNode, vectorNetwork: any, data: any): Promise<void> {
-    const normalized = normalizeVectorNetworkForFigma(createVectorNetworkWithLayoutBoxAnchors(vectorNetwork, data));
+    const capped = createRingCapGeometry(vectorNetwork, Number(data?.geometry?.strokeWeight), data?.layout);
+    const normalized = normalizeVectorNetworkForFigma(createVectorNetworkWithLayoutBoxAnchors(capped.network, data));
     try {
         await node.setVectorNetworkAsync(normalized);
+        queueVectorRings(node, capped.rings);
         return;
     } catch (error) {
         console.warn("Unable to set vectorNetwork, retrying without vertex stroke caps/corner radii:", data?.name || data?.id || "Untitled", error);
@@ -16,6 +19,7 @@ export async function applyVectorNetwork(node: VectorNode, vectorNetwork: any, d
 
     try {
         await node.setVectorNetworkAsync(stripVectorNetworkVertexExtras(normalized));
+        queueVectorRings(node, capped.rings);
     } catch (fallbackError) {
         console.warn("Unable to set fallback vectorNetwork:", data?.name || data?.id || "Untitled", fallbackError);
     }

@@ -67,6 +67,10 @@ export function createUntransformedContainerShellProps(data: any): any {
 }
 
 export function createContainerShellFrameProps(data: any): any {
+    const transform = data?.layout?.relativeTransform;
+    if (hasFiniteTransform(transform) && transform[0][0] * transform[1][1] - transform[0][1] * transform[1][0] < 0) {
+        return createBooleanFrameFallbackProps(data);
+    }
     return hasNonTranslationTransform(data?.layout) ?
         createUntransformedContainerShellProps(data) :
         createBooleanFrameFallbackProps(data);
@@ -342,6 +346,13 @@ export async function finalizeGroupShell(
     data: any,
     applyPropertiesCallback: (node: any, data: any) => Promise<void>
 ) {
+    const transform = data?.layout?.relativeTransform;
+    if (hasFiniteTransform(transform) && transform[0][0] * transform[1][1] - transform[0][1] * transform[1][0] < 0) {
+        // A reflected frame composes the source child matrices in local space.
+        // 镜像容器在局部空间组合来源子层矩阵。
+        await applyPropertiesCallback(shell, createBooleanFrameFallbackProps(data));
+        return;
+    }
     const parent = shell.parent;
     const children = [...shell.children] as SceneNode[];
 

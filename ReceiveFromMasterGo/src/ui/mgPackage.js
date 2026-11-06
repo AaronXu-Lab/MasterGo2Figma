@@ -1971,7 +1971,7 @@
       return { value: result, next: p };
     }
 
-    const MG_STROKE_CAP = { 1: "ROUND", 2: "SQUARE", 3: "ARROW_LINES", 4: "ARROW_EQUILATERAL" };
+    const MG_STROKE_CAP = { 1: "ROUND", 2: "SQUARE", 3: "ARROW_LINES", 4: "ARROW_EQUILATERAL", 6: "ROUND_ARROW", 7: "RING" };
 
     // Geometry blob grammar (entry: `01 <32-hex hash> 00`, fields ascending):
     //   02 <n>  segment records:  01 <count=4:[start,c1,c2,end]> 02 <index> 00
@@ -2720,8 +2720,21 @@
         }
         if (textDetails.styledRuns) nodes[mk.recId].styledRuns = textDetails.styledRuns;
       }
+      mgResolveTextPaintRefs(nodes, paints);
       for (const id in nodes) if (!nodes[id].parent) nodes[id].parent = nodes[id].owner;
       return { nodes: nodes, paints: paints, geoms: geoms, fontStyles: fontStyles, effectTable: effectTable, exportTable: exportTable };
+    }
+
+    // Resolve full-cover text colors before component inheritance.
+    // 在组件继承前解析覆盖整段文字的颜色。
+    function mgResolveTextPaintRefs(nodes, paints) {
+      for (const n of Object.values(nodes)) {
+        const runs = n.styledRuns;
+        if (n.type !== "TEXT" || !runs || runs.length !== 1 || !n.fontRuns ||
+            n.fontRuns.length > 1 || runs[0].start !== 0 ||
+            runs[0].end !== (n.characters || "").length || !paints[runs[0].paintRef]) continue;
+        n.paintRef = runs[0].paintRef;
+      }
     }
 
     function mgResolveNativeTypes(n, fallbackType) {
@@ -3712,9 +3725,16 @@
       const newParentH = Math.max(0, cloneParent && cloneParent.h || oldParentH);
       const constraintH = t.constraintH !== undefined ? t.constraintH : slot && slot.constraintH;
       const constraintV = t.constraintV !== undefined ? t.constraintV : slot && slot.constraintV;
-      const horizontal = mgScaleByConstraint(constraintH, baseX, baseW, oldParentW, newParentW);
-      const vertical = mgScaleByConstraint(constraintV, baseY, baseH, oldParentH, newParentH);
-      clone.x = horizontal.pos; clone.y = vertical.pos;
+      const matrix = t.relativeTransform;
+      const axisAligned = matrix && Math.abs(matrix[0][1]) < 1e-6 && Math.abs(matrix[1][0]) < 1e-6;
+      const flipX = axisAligned && matrix[0][0] < 0;
+      const flipY = axisAligned && matrix[1][1] < 0;
+      // Apply edge constraints to reflected bounds, then restore the local origin.
+      // 按镜像后的边界计算约束，再还原局部原点。
+      const horizontal = mgScaleByConstraint(constraintH, baseX - (flipX ? baseW : 0), baseW, oldParentW, newParentW);
+      const vertical = mgScaleByConstraint(constraintV, baseY - (flipY ? baseH : 0), baseH, oldParentH, newParentH);
+      clone.x = horizontal.pos + (flipX ? horizontal.size : 0);
+      clone.y = vertical.pos + (flipY ? vertical.size : 0);
       clone.w = horizontal.size; clone.h = vertical.size;
       // A GROUP that exactly covers its template parent has no independent
       // stored bounds in Figma; its full-bleed child content follows the
@@ -4214,7 +4234,36 @@
       }
     }
 
+    // Returns the uniform scale between two stored boxes, or the supplied fallback.
+    // 返回两个已存储边界之间的等比缩放；非等比边界使用传入的备用值。
+    function mgUniformBoxScale(source, target, fallback) {
+      if (!(source && target && source.w > 0 && source.h > 0 && target.w > 0 && target.h > 0)) return fallback;
+      const sx = target.w / source.w, sy = target.h / source.h;
+      return Math.abs(sx - sy) <= 1e-5 * Math.max(1, sx, sy) ? sx : fallback;
+    }
+
+    // Resolves accumulated scale hints against the stored component dimensions.
+    // 根据已存储的组件尺寸解析累计缩放值。
+    function mgResolveInstanceScaleHints(nodes) {
+      for (const id of Object.keys(nodes)) {
+        const n = nodes[id];
+        const master = n && nodes[n.templateRef];
+        if (!n || !n.containerMeta || n.containerMeta.subtype !== "INSTANCE" ||
+            !master || !master.containerMeta || master.containerMeta.subtype !== "COMPONENT") continue;
+        const stored = n.trailer && n.trailer.scaleFactor;
+        const masterScale = master.trailer && master.trailer.scaleFactor;
+        if (!(stored > 0 && masterScale > 0) || Math.abs(masterScale - 1) < 1e-6 ||
+            !n.hasExplicitW || !n.hasExplicitH) continue;
+        const ratio = mgUniformBoxScale(master, n, NaN);
+        const relative = stored / masterScale;
+        if (isFinite(ratio) && Math.abs(ratio - relative) <= 1e-5 * Math.max(1, ratio, relative)) {
+          n.instanceScaleHint = relative;
+        }
+      }
+    }
+
     function mgExpandTemplateInstances(nodes, childIds) {
+      mgResolveInstanceScaleHints(nodes);
       // Full exports mirror nested-instance overrides as BARE-id record trees
       // under the instance's template slot: mirror.parent = the slot (or the
       // parent mirror), mirror.templateRef = the mirrored component child
@@ -4292,15 +4341,13 @@
           }
         }
         if (!comp) continue;
-        // instance scale factor (trailer tag 26) applies to every size-like
-        // scalar in the subtree: stroke weights, corners, font sizes, vector
-        // geometry. The stored value is ABSOLUTE (already accumulated across
-        // nesting); an instance record without one is unscaled. A SYNTHESIZED
-        // nested instance only borrows its template's trailer, whose factor is
-        // the ambient scale inside the COMPONENT — its real ambient is the one
-        // the parent walk already handed down.
-        inst.effScale = (!inst.isSynthesizedInstanceChild && inst.trailer && inst.trailer.scaleFactor) ||
-          (inst.isSynthesizedInstanceChild && inst.trailer && inst.trailer.scaleFactor && (inst.effScale || 1) * inst.trailer.scaleFactor) ||
+        // Scale hints describe inherited geometry and typography. Resolved
+        // hints are relative to the stored master; synthesized nested instances
+        // combine their template hint with the outer expansion scale.
+        // 缩放值描述继承的几何与字体；合成的嵌套实例叠加外层缩放。
+        const scaleHint = inst.instanceScaleHint || (inst.trailer && inst.trailer.scaleFactor);
+        inst.effScale = (!inst.isSynthesizedInstanceChild && scaleHint) ||
+          (inst.isSynthesizedInstanceChild && scaleHint && (inst.effScale || 1) * scaleHint) ||
           inst.effScale || 1;
         // walk the template subtree breadth-first; parents are processed before
         // children so the parent's actual size is known for constraint scaling.
@@ -4378,6 +4425,7 @@
             // the instance's own scale scaled 核心功能 2's whole subtree by the
             // component's 1.111 instead of the page's 0.539.
             const ownRecord = !!child;
+            let sourceScale = inst.effScale;
             if (!child) {
               // A slash-id override record stores values that are FINAL in its
               // own instance context (临时测试: `3:0877/3:0817` spells the
@@ -4389,7 +4437,8 @@
               const shareOverrideParent = t !== nodes[childTplId] && !bareOv &&
                 t.id && t.id.indexOf("/") >= 0 && t.parent && nodes[t.parent]
                 ? nodes[t.parent] : null;
-              child = mgSynthesizeInstanceChild(t, nodes[childTplId], cloneId, cur.cloneId, shareOverrideParent || tplNode, cloneNode, inst.effScale);
+              if (shareOverrideParent) sourceScale = mgUniformBoxScale(shareOverrideParent, cloneNode, sourceScale);
+              child = mgSynthesizeInstanceChild(t, nodes[childTplId], cloneId, cur.cloneId, shareOverrideParent || tplNode, cloneNode, sourceScale);
               if (t.textStyleRef) child.textStyleInherited = true;
               nodes[cloneId] = child;
               added++;
@@ -4403,7 +4452,7 @@
             // holds the per-instance overrides: opacity 0.4, hidden, recolor,
             // explicit-zero paddings — 0712-2 nav rows).
             if (bareOv) child.mirrorNode = bareOv.id;
-            child.effScale = (ownRecord && child.trailer && child.trailer.scaleFactor) || inst.effScale;
+            child.effScale = (ownRecord && (child.instanceScaleHint || (child.trailer && child.trailer.scaleFactor))) || sourceScale;
             // Nested-instance decision must consult the TEMPLATE child too: a
             // raw stub for a nested instance carries only a bare `0f` container
             // (subtype FRAME), and walking it would descend into the slot's
@@ -4867,7 +4916,9 @@
         const children = (record.childIds || []).map(signature);
         const layout = record.props.layout || {};
         const m = layout.relativeTransform;
-        rotatedStretch[id] = record.props.arcCornerRadius > 0 || (layout.layoutAlign === "STRETCH" && m &&
+        const hollowCap = record.props.vectorNetwork && record.props.vectorNetwork.vertices &&
+          record.props.vectorNetwork.vertices.some(vertex => vertex.strokeCap === "RING" || vertex.strokeCap === "ROUND_ARROW");
+        rotatedStretch[id] = hollowCap || record.props.arcCornerRadius > 0 || (layout.layoutAlign === "STRETCH" && m &&
           Math.abs(m[0][0]) < 1e-6 && Math.abs(m[1][1]) < 1e-6 &&
           Math.abs(Math.abs(m[0][1]) - 1) < 1e-6 && Math.abs(Math.abs(m[1][0]) - 1) < 1e-6) ||
           (record.childIds || []).some(cid => rotatedStretch[cid]);
@@ -5251,10 +5302,10 @@
         // in 容器 359 unrescaled. Figma then only resized the shell, and the
         // locked component children kept component-space values inside a
         // 0.539-sized box — the 快/慢 chips rendered as circles (radius 7 on a
-        // 17px box) with a clipped 22px glyph. effScale already equals the own
-        // trailer factor for a top-level instance (mgExpandTemplateInstances).
+        // 17px box) with a clipped 22px glyph. Materialized instances use the
+        // resolved hint when expansion retained their existing child records.
         const instScale = isFinite(n.effScale) ? n.effScale
-          : (n.trailer ? n.trailer.scaleFactor : 1);
+          : (n.instanceScaleHint || (n.trailer ? n.trailer.scaleFactor : 1));
         if (props.sourceType === "INSTANCE" && isFinite(instScale) &&
             instScale > 0 && Math.abs(instScale - 1) > 1e-6) {
           record.instanceScale = instScale;
@@ -5547,6 +5598,7 @@
       shouldInheritStroke: mgShouldInheritStroke,
       decodeNativeNodes: mgDecodeNativeNodes,
       nativeProps: mgNativeProps,
+      resolveTextPaintRefs: mgResolveTextPaintRefs,
       decodeGeometryBlob: mgDecodeGeometryBlob,
       scanLayoutGrids: mgScanLayoutGrids,
       parseContainerMeta: mgParseContainerMeta,

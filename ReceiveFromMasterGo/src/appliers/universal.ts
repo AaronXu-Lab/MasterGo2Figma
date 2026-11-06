@@ -628,7 +628,7 @@ export async function applyUniversalProperties(node: any, data: any) {
             if (layout.rotation !== undefined) safeSet(node, "rotation", layout.rotation);
         }
         if (layout.constrainProportions !== undefined) {
-            applyAspectRatioLock(node, layout.constrainProportions);
+            applyAspectRatioLock(node, layout.constrainProportions, layout);
         }
         deferLayoutRestore(node, layout, isGroup);
     }

@@ -1501,10 +1501,14 @@ ${style}`;
     const counterSizing = normalizeAxisSizingMode(layout.counterAxisSizingMode || node.counterAxisSizingMode);
     return primarySizing === "FIXED" || counterSizing === "FIXED";
   }
-  function applyAspectRatioLock(node, shouldLock) {
+  function applyAspectRatioLock(node, shouldLock, layout = node) {
+    var _a, _b;
+    const width = (_a = layout.width) != null ? _a : node.width;
+    const height = (_b = layout.height) != null ? _b : node.height;
+    const hasArea = width > 0 && height > 0;
     if (typeof node.lockAspectRatio === "function" && typeof node.unlockAspectRatio === "function") {
       try {
-        if (shouldLock) {
+        if (shouldLock && hasArea) {
           node.lockAspectRatio();
         } else if (node.targetAspectRatio) {
           node.unlockAspectRatio();
@@ -1637,21 +1641,133 @@ ${style}`;
     return result;
   }
 
+  // src/appliers/vectorRings.ts
+  var pendingRings = /* @__PURE__ */ new Map();
+  function resetVectorRings() {
+    pendingRings.clear();
+  }
+  function mix(a, b, t) {
+    return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+  }
+  function splitCurve(points, t) {
+    const a = mix(points[0], points[1], t), b = mix(points[1], points[2], t), c = mix(points[2], points[3], t);
+    const d = mix(a, b, t), e = mix(b, c, t);
+    return [mix(d, e, t), e, c, points[3]];
+  }
+  function curveLength(points, end) {
+    let previous = points[0], length = 0;
+    for (let i = 1; i <= 32; i++) {
+      const next = splitCurve(points, end * i / 32)[0];
+      length += Math.hypot(next.x - previous.x, next.y - previous.y);
+      previous = next;
+    }
+    return length;
+  }
+  function createRingCapGeometry(network, weight, layout) {
+    var _a;
+    if (!((_a = network == null ? void 0 : network.vertices) == null ? void 0 : _a.some((v) => v.strokeCap === "RING" || v.strokeCap === "ROUND_ARROW")) || !(weight > 0)) {
+      return { network, rings: [] };
+    }
+    const next = JSON.parse(JSON.stringify(network));
+    const rings = [];
+    for (let index = 0; index < next.vertices.length; index++) {
+      const vertex = next.vertices[index];
+      if (vertex.strokeCap !== "RING" && vertex.strokeCap !== "ROUND_ARROW") continue;
+      const filled = vertex.strokeCap === "ROUND_ARROW";
+      vertex.strokeCap = "NONE";
+      const incident = next.segments.filter((s) => s.start === index || s.end === index);
+      if (incident.length !== 1) continue;
+      const segment = incident[0], reversed = segment.end === index;
+      const start = next.vertices[segment.start], end = next.vertices[segment.end];
+      const ts = segment.tangentStart || { x: 0, y: 0 }, te = segment.tangentEnd || { x: 0, y: 0 };
+      let points = [
+        { x: start.x, y: start.y },
+        { x: start.x + ts.x, y: start.y + ts.y },
+        { x: end.x + te.x, y: end.y + te.y },
+        { x: end.x, y: end.y }
+      ];
+      if (reversed) points.reverse();
+      const radius = weight * 2.9;
+      rings.push({ x: vertex.x, y: vertex.y, radius, filled });
+      const distance = Math.min(radius, curveLength(points, 1) / 2);
+      let low = 0, high = 1;
+      for (let i = 0; i < 24; i++) {
+        const t = (low + high) / 2;
+        if (curveLength(points, t) < distance) low = t;
+        else high = t;
+      }
+      points = splitCurve(points, (low + high) / 2);
+      if (reversed) points.reverse();
+      start.x = points[0].x;
+      start.y = points[0].y;
+      end.x = points[3].x;
+      end.y = points[3].y;
+      segment.tangentStart = { x: points[1].x - start.x, y: points[1].y - start.y };
+      segment.tangentEnd = { x: points[2].x - end.x, y: points[2].y - end.y };
+    }
+    if (rings.length && Number.isFinite(layout == null ? void 0 : layout.width) && Number.isFinite(layout == null ? void 0 : layout.height)) {
+      for (const point of [{ x: 0, y: 0 }, { x: layout.width, y: layout.height }]) {
+        const index = next.vertices.length;
+        next.vertices.push(__spreadProps(__spreadValues({}, point), { strokeCap: "NONE" }));
+        next.segments.push({ start: index, end: index });
+      }
+    }
+    return { network: next, rings };
+  }
+  function queueVectorRings(node, rings) {
+    if (rings.length) pendingRings.set(node.id, { node, rings });
+  }
+  function renderVectorRings() {
+    let count = 0;
+    for (const { node, rings } of pendingRings.values()) {
+      if (node.removed) continue;
+      const parent = node.parent;
+      if (!parent || !("insertChild" in parent)) continue;
+      for (const ring of rings) {
+        const circle = figma.createEllipse();
+        parent.insertChild(parent.children.indexOf(node) + 1, circle);
+        circle.name = ring.filled ? "Endpoint circle" : "Endpoint ring";
+        circle.setPluginData("mastergoEndpointRing", "true");
+        circle.resize(ring.radius * 2, ring.radius * 2);
+        circle.fills = ring.filled ? node.strokes : [];
+        circle.strokes = ring.filled ? [] : node.strokes;
+        circle.strokeWeight = node.strokeWeight;
+        circle.strokeAlign = "CENTER";
+        circle.opacity = node.opacity;
+        circle.visible = node.visible;
+        if ("layoutMode" in parent && parent.layoutMode !== "NONE") circle.layoutPositioning = "ABSOLUTE";
+        const transform = node.relativeTransform;
+        const x = ring.x - ring.radius, y = ring.y - ring.radius;
+        circle.relativeTransform = [
+          [transform[0][0], transform[0][1], transform[0][2] + transform[0][0] * x + transform[0][1] * y],
+          [transform[1][0], transform[1][1], transform[1][2] + transform[1][0] * x + transform[1][1] * y]
+        ];
+        count++;
+      }
+    }
+    pendingRings.clear();
+    return count;
+  }
+
   // src/appliers/vector.ts
   function normalizeVectorStrokeCap(value) {
     return normalizeConnectorVectorStrokeCap(value);
   }
   function applyVectorNetwork(node, vectorNetwork, data) {
     return __async(this, null, function* () {
-      const normalized = normalizeVectorNetworkForFigma(createVectorNetworkWithLayoutBoxAnchors(vectorNetwork, data));
+      var _a;
+      const capped = createRingCapGeometry(vectorNetwork, Number((_a = data == null ? void 0 : data.geometry) == null ? void 0 : _a.strokeWeight), data == null ? void 0 : data.layout);
+      const normalized = normalizeVectorNetworkForFigma(createVectorNetworkWithLayoutBoxAnchors(capped.network, data));
       try {
         yield node.setVectorNetworkAsync(normalized);
+        queueVectorRings(node, capped.rings);
         return;
       } catch (error) {
         console.warn("Unable to set vectorNetwork, retrying without vertex stroke caps/corner radii:", (data == null ? void 0 : data.name) || (data == null ? void 0 : data.id) || "Untitled", error);
       }
       try {
         yield node.setVectorNetworkAsync(stripVectorNetworkVertexExtras(normalized));
+        queueVectorRings(node, capped.rings);
       } catch (fallbackError) {
         console.warn("Unable to set fallback vectorNetwork:", (data == null ? void 0 : data.name) || (data == null ? void 0 : data.id) || "Untitled", fallbackError);
       }
@@ -2514,7 +2630,7 @@ ${style}`;
           if (layout.rotation !== void 0) safeSet(node, "rotation", layout.rotation);
         }
         if (layout.constrainProportions !== void 0) {
-          applyAspectRatioLock(node, layout.constrainProportions);
+          applyAspectRatioLock(node, layout.constrainProportions, layout);
         }
         deferLayoutRestore(node, layout, isGroup);
       }
@@ -2683,6 +2799,11 @@ ${style}`;
     return props;
   }
   function createContainerShellFrameProps(data) {
+    var _a;
+    const transform = (_a = data == null ? void 0 : data.layout) == null ? void 0 : _a.relativeTransform;
+    if (hasFiniteTransform(transform) && transform[0][0] * transform[1][1] - transform[0][1] * transform[1][0] < 0) {
+      return createBooleanFrameFallbackProps(data);
+    }
     return hasNonTranslationTransform(data == null ? void 0 : data.layout) ? createUntransformedContainerShellProps(data) : createBooleanFrameFallbackProps(data);
   }
   function createFinalizedContainerProps(data, preserveLayout = false) {
@@ -2846,6 +2967,12 @@ ${style}`;
   }
   function finalizeGroupShell(shell, data, applyPropertiesCallback) {
     return __async(this, null, function* () {
+      var _a;
+      const transform = (_a = data == null ? void 0 : data.layout) == null ? void 0 : _a.relativeTransform;
+      if (hasFiniteTransform(transform) && transform[0][0] * transform[1][1] - transform[0][1] * transform[1][0] < 0) {
+        yield applyPropertiesCallback(shell, createBooleanFrameFallbackProps(data));
+        return;
+      }
       const parent = shell.parent;
       const children = [...shell.children];
       if (!parent || !("insertChild" in parent) || children.length < 1) {
@@ -3239,6 +3366,7 @@ ${style}`;
       if (totalNodes <= 0 || totalPages <= 0) throw new Error("\u6240\u9009\u9875\u9762\u6CA1\u6709\u53EF\u8FD8\u539F\u7684\u56FE\u5C42");
       state.importInProgress = true;
       state.reset();
+      resetVectorRings();
       state.fontLoadPromises = {};
       state.resetRestoreRuntimeStats(totalNodes, totalPages);
       clearPendingImportAssets();
@@ -3682,6 +3810,7 @@ ${style}`;
         addImportTiming(session, "finalize.missingFontsMs", Date.now() - missingFontStartedAt);
         postFinalizeProgress(session, 2, 4);
         flushInstanceChildLayoutOverrides(true);
+        renderVectorRings();
         paintFilledMaskTwins(session);
         removeLibraryMasterNodes(session);
         const viewportStartedAt = Date.now();
@@ -3795,6 +3924,7 @@ ${style}`;
   }
   function rollbackImportSession(session) {
     return __async(this, null, function* () {
+      resetVectorRings();
       if (!session) return;
       for (const page of session.restoredPages) {
         try {

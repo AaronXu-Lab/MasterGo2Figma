@@ -1047,6 +1047,33 @@ Entries (interleaved with compact non-font shells `05 <b> 00 00`):
 - fontSize still falls back to the box-height guess when a node has no style ref.
 
 ## Native instance expansion — template chain implemented
+
+### Scaled component masters and materialized overrides (2026-11-06)
+
+An instance's tag `26` can include the component master's stored ambient scale.
+The XIAO pin-label masters have a 135 × 32.4 stored box and scale `0.54`;
+affected 121.5 × 29.16 instances carry `0.486`. Their scale relative to the
+stored master is `0.486 / 0.54 = 0.9`. Other instances of the same master already
+carry the relative value `0.9`. Resolve the accumulated spelling only when
+**both stored dimension ratios** agree with the quotient within `1e-5` relative
+tolerance. Preserve the original trailer and explicit geometry; use the resolved
+hint for template expansion and record-level `instanceScale`. Independently
+resized, nonuniform and uncorroborated records keep their existing scale semantics.
+
+A selected slash-path override carries final values in its own parent's space.
+When synthesizing another instance from it, an equal-size override parent maps
+with scale `1`; a uniformly resized parent maps by its actual box ratio. Use
+that same source-space factor for geometry and inherited typography. For example,
+the materialized GND override retains its 39 × 20 box and 16.038 px font in an
+equal-size clone. A further outer scale of `0.5` produces 19.5 × 10 and 8.019 px.
+
+Evidence: native MasterGo rendering and SVG of the SAMD21 front artwork, original
+Figma import with clipped GND/3.3V-OUT/A10, and raw record/master dimension and
+font cross-checks. Automated fixtures cover accumulated and relative spellings,
+nonuniform resize, nested materialized overrides and an additional outer scale.
+The complete private file decodes in both full and UI-slim modes with 26 pages /
+21,179 records and passes package validation. A 26-page actual import confirms
+restored SAMD21 label visibility. All-page native image comparison remains pending.
 Share-export instances expand from tag `0x1a` template refs into
 `<instanceId>/<sourceChildId>` ids. Sparse scalar presence, visibility, transform-matrix
 inheritance, absolute tag `0x26` scale, Boolean leaf pruning, and evidenced GROUP/Boolean rebasing
@@ -1698,3 +1725,60 @@ MG also retains crop data whereas ZIP omits it. Do not claim all deep diff is ze
 or invoke the only-missing-font early completion branch. Final visual acceptance
 and export-side decision remain with the user. Private artifacts live outside
 the repository in Downloads/测试集 1012 2; final Figma file 3wT3bian5YLQxyiuIDRTpn.
+
+
+### Zero-axis paths and Figma aspect-ratio constraints (2026-11-06)
+
+The native path dimensions and STRETCH/CENTER constraints already carry the
+correct wire length: a 154.8 px instance contains a 154.80003 × 0 path. The
+Figma importer previously translated `constrainProportions` into the modern
+`lockAspectRatio()` API for that path. Figma stored a 408.00003:0.0001 target
+ratio on the master, and resizing its instance left the path at 367.20004 px.
+A cloned-master probe with the ratio cleared restores a 155.00003 px path;
+Figma's constraint resize rounds this zero-axis geometry to a pixel.
+
+`applyAspectRatioLock` now accepts the source layout dimensions. A positive
+width and height enable proportional resizing; a zero axis clears the target
+ratio and retains the path's independent axis constraints. Source dimensions
+cover Figma's minimum-height clamp during vector creation. The rule applies
+to both MG and ZIP imports. Two-dimensional artwork keeps its source ratio
+setting. Automated checks cover horizontal/vertical paths, clamped dimensions
+and ordinary artwork. See the [Figma aspect-ratio API](https://developers.figma.com/docs/plugins/api/node-properties/#aspectratiolockmixin).
+
+
+### Circular endpoint caps, inherited text colors and reflected groups (2026-11-06)
+
+Native geometry vertex field `07` distinguishes `6=ROUND_ARROW` (solid circle)
+and `7=RING` (hollow circle). Cross-checks use native front-artwork SVG and
+the SAMD21 Plus back SVG/PNG. A solid endpoint has radius `2.9 × strokeWeight`;
+a ring has center-line radius `2.9 × strokeWeight`, inner radius `2.4 ×` and
+outer radius `3.4 ×`. Preserve these source semantics rather than mapping both
+types onto Figma's filled-circle cap. The [Figma cap API](https://developers.figma.com/docs/plugins/api/StrokeCap/)
+provides a filled circle and has no hollow-ring equivalent.
+
+The receiver trims the endpoint segment outside the circular center, retains
+the logical vector box using degenerate anchors, and adds editable ellipse
+caps after page layout. Circular-cap instances and their enclosing instances
+use full-property editable frame fallbacks. Other instances keep native links.
+Source paths, labels and circles remain individually editable.
+
+Resolve a single full-cover text color run before template inheritance. Its
+paint is already authoritative for raw text; early normalization carries the
+same color to generated descendants while explicit instance recolors remain
+local. The private file has 147 POWER texts, all resolving to white. Partial
+or mixed font/color runs keep their range semantics.
+
+For reflected, axis-aligned synthesized children, apply constraints to the
+transformed bounds and then reconstruct the local origin. A reversed 408 px
+path resized to 247 px has local x=247, not x=408. Reflected source groups
+retain frame wrappers initialized with source dimensions before their children
+are created; their nested reflection matrices compose in local space.
+
+216 Node tests and both builds pass. Full and UI-slim conversion retain all
+26 pages / 21,179 records, including 1,700 editable-geometry instance fallbacks.
+Actual Figma Desktop import completed for all 26 pages. A local read-only audit
+matched all 21,179 source nodes and 170 roots; 1,658 zero-axis paths, 2,777
+circular caps and 147 white POWER labels pass geometry/color checks. Text
+contents and reflection signs match the decoded tree. Native render comparison
+currently covers the SAMD21 front and SAMD21 Plus back artwork; complete
+all-page native-image comparison and final visual acceptance remain pending.

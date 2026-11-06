@@ -452,10 +452,15 @@ export function shouldRestoreFixedSize(node: any, layout: any): boolean {
     return primarySizing === "FIXED" || counterSizing === "FIXED";
 }
 
-export function applyAspectRatioLock(node: any, shouldLock: boolean) {
+export function applyAspectRatioLock(node: any, shouldLock: boolean, layout: any = node) {
+    // Zero-axis paths retain independent length constraints.
+    // 零尺寸轴的路径按独立轴约束恢复长度。
+    const width = layout.width ?? node.width;
+    const height = layout.height ?? node.height;
+    const hasArea = width > 0 && height > 0;
     if (typeof node.lockAspectRatio === "function" && typeof node.unlockAspectRatio === "function") {
         try {
-            if (shouldLock) {
+            if (shouldLock && hasArea) {
                 node.lockAspectRatio();
             } else if (node.targetAspectRatio) {
                 node.unlockAspectRatio();

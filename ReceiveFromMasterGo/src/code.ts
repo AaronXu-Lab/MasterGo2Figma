@@ -34,6 +34,7 @@ import {
   restoreComponentSetNode
 } from "./appliers/container";
 import { yieldToEventLoop } from "../../shared/utils";
+import { resetVectorRings, renderVectorRings } from "./appliers/vectorRings";
 
 const RESTORE_PROGRESS_NODE_INTERVAL = 100;
 const RESTORE_PROGRESS_TIME_INTERVAL_MS = 500;
@@ -281,6 +282,7 @@ async function startImportSession(message: any) {
 
   state.importInProgress = true;
   state.reset();
+  resetVectorRings();
   // Font-load results (including cached failures) are per session.
   state.fontLoadPromises = {};
   state.resetRestoreRuntimeStats(totalNodes, totalPages);
@@ -768,6 +770,7 @@ async function completeImportSession(message: any) {
     // masters now that every page has re-linked its instances (Figma keeps
     // instances of a removed component working).
     flushInstanceChildLayoutOverrides(true);
+    renderVectorRings();
     paintFilledMaskTwins(session);
     removeLibraryMasterNodes(session);
 
@@ -891,6 +894,7 @@ function clearPendingImportPages() {
 }
 
 async function rollbackImportSession(session: ImportSession | null): Promise<void> {
+  resetVectorRings();
   if (!session) return;
   for (const page of session.restoredPages) {
     try {
