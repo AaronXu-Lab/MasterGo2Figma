@@ -1,5 +1,6 @@
 import { prepareImageAssetBytes } from "./imageAssets.js";
 import { readZipDirectory } from "../../shared/zipArchive.js";
+import { decompressZipEntry } from "./zipDecompression.js";
 
 // Framework-free import engine, ported verbatim from the old ui.template.html
 // inline script. Owns the package state (manifest/entries), the zip/.mg
@@ -327,17 +328,20 @@ export async function parseFiles(files) {
 
   entries = {};
   const fileNames = [];
+  let readStage = "读取文件";
 
   try {
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       fileNames.push(file.name);
 
+      readStage = "读取文件";
       const fileReadStartedAt = Date.now();
       const buffer = await file.arrayBuffer();
       addClientTiming("ui.file.arrayBufferMs", Date.now() - fileReadStartedAt);
       addClientTimingBytes("ui.file.bytes", buffer.byteLength || 0);
       const zipReadStartedAt = Date.now();
+      readStage = "解压文件";
       let zipEntries = await readZipEntries(buffer);
       addClientTiming("ui.zip.readEntriesMs", Date.now() - zipReadStartedAt, Object.keys(zipEntries).length);
 
@@ -346,6 +350,7 @@ export async function parseFiles(files) {
       // Convert it into the same in-memory v2 package the rest of the
       // pipeline already understands, so nothing downstream has to change.
       if (window.MasterGoMg.isMgPackage(file.name, zipEntries)) {
+        readStage = "解析 MG 图层";
         // slimInstanceDescendants: instance-descendant records are only
         // read for override matching in the plugin — full props (455MB of
         // vectorNetwork etc. on the Tesla fixture) OOM the Figma tab.
@@ -353,6 +358,7 @@ export async function parseFiles(files) {
         zipEntries = window.MasterGoMg.convertMgPackageToV2Entries(zipEntries, file.name, { slimInstanceDescendants: true });
       }
 
+      readStage = "校验导入数据";
       const manifestPath = findManifestPath(zipEntries);
       if (!manifestPath) {
         throw new Error(`文件 "${file.name}" 中没有 manifest.json`);
@@ -429,7 +435,7 @@ export async function parseFiles(files) {
     }
   } catch (error) {
     resetPackage();
-    throw error;
+    throw new Error(`${readStage}失败：${error instanceof Error ? error.message : String(error)}`);
   }
 
   manifest = mergedManifest;
@@ -935,12 +941,7 @@ async function readZipEntries(buffer) {
 async function readZipFileEntry(bytes, entry) {
   const compressed = bytes.subarray(entry.dataStart, entry.dataStart + entry.compressedSize);
   if (entry.method === 0) return compressed;
-  if (entry.method === 8 && typeof DecompressionStream === "function") {
-    const stream = new Blob([compressed]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
-    const content = new Uint8Array(await new Response(stream).arrayBuffer());
-    if (content.length !== entry.uncompressedSize) throw new Error("ZIP 解压后的文件尺寸不一致");
-    return content;
-  }
+  if (entry.method === 8) return decompressZipEntry(compressed, entry.uncompressedSize);
 
   throw new Error("暂不支持此 zip 压缩方式，请使用 SendToFigma 导出的 zip");
 }

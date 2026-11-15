@@ -12,3 +12,12 @@ desired compatible version in this directory and run `npm run build`; the UI sou
 build script are provided in this repository.
 
 License texts are in `licenses/heic-to-LGPL-3.0.txt` and `licenses/GPL-3.0.txt`.
+
+# Bundled ZIP decompression fallback
+
+`fflate` 0.8.2 (MIT) is bundled into `ui.html` as a local raw-DEFLATE fallback
+when the host's native decompression API is unavailable or fails. It uses no
+network requests or workers. The package is unmodified.
+
+- Upstream: https://github.com/101arrowz/fflate
+- License text: `licenses/fflate-MIT.txt`

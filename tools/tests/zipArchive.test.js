@@ -25,6 +25,25 @@ const bundle = esbuild.buildSync({
 const engine = { exports: {} };
 new Function("module", "exports", "require", bundle.outputFiles[0].text)(engine, engine.exports, require);
 
+test("UI reads a deflated MG archive without the native decompression API", async () => {
+  const legacyHost = { exports: {} };
+  new Function("module", "exports", "require", "DecompressionStream", bundle.outputFiles[0].text)(
+    legacyHost, legacyHost.exports, require, undefined
+  );
+  const data = Buffer.from("MG document bytes 中文".repeat(100));
+  const { bytes: zip } = archive([{ name: "document", data, method: 8 }]);
+  const entries = await legacyHost.exports.readArchive(zip);
+  assert.deepEqual(Buffer.from(entries.document), data);
+});
+
+test("file parsing reports the failing stage and retains the original error", async () => {
+  await assert.rejects(engine.exports.parseFiles([{
+    name: "broken.mg",
+    arrayBuffer: async () => new ArrayBuffer(0)
+  }]), /解压文件失败：不是有效的 ZIP 文件/);
+  assert.equal(engine.exports.hasPackage(), false);
+});
+
 function crc32(bytes) {
   let crc = 0xffffffff;
   for (const byte of bytes) {
